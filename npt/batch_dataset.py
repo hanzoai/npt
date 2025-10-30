@@ -1,7 +1,6 @@
 import numpy as np
 import torch
 import torch.nn.functional as F
-import copy
 
 from npt.mask import (mask_data_for_dataset_mode, 
                       apply_mask_val_ad_for_dataset,
@@ -26,11 +25,6 @@ Tuple[batch_modes, mode_balance]
 """
 
 BATCHING_SETTINGS_MAP_AD = {
-    # SSL Class/Reg: makes sense to stratify train vs val vs test if poss #
-    (True, 'train'): ([0, 1], False),
-    (True, 'val'): ([0, 1], True),
-    (True, 'test'): ([0, 1, 2], True),
-
     # Prod Class/Reg: makes sense to stratify train vs val vs test if poss #
     (False, 'train'): ([0], False),
     (False, 'val'): ([0, 1], True),
@@ -38,13 +32,19 @@ BATCHING_SETTINGS_MAP_AD = {
 }
 
 
-
-
 class NPTBatchDataset(torch.utils.data.IterableDataset):
     def __init__(
-            self, data_dict, c, curr_cv_split, metadata, device, sigmas, ad:bool=True,
-            indice_dict:tuple=None, num_anom_inference:int=0):
-        self.c = c
+            self,
+            data_dict,
+            config,
+            curr_cv_split,
+            metadata,
+            device,
+            sigmas,
+            indice_dict:tuple=None,
+            num_anom_inference:int=0
+        ):
+        self.config = config
         self.curr_cv_split = curr_cv_split
         self.metadata = metadata
         self.target_cols = list(
@@ -54,7 +54,6 @@ class NPTBatchDataset(torch.utils.data.IterableDataset):
         self.sigmas = sigmas
         self.valid_modes = ['train', 'val', 'test',]
         self.device = device
-        self.ad = ad
         self.num_anom_inference = num_anom_inference
         
         if indice_dict:
@@ -63,12 +62,14 @@ class NPTBatchDataset(torch.utils.data.IterableDataset):
             self.old_indice_to_target_val) = indice_dict
 
         # The underlying data matrices of the dataset, which are stored
-        # entirely on the CUDA device if c.data_set_on_cuda = True
+        # entirely on the CUDA device if config.data.dataset_on_cuda = True
         # These are never altered (we purely copy these, as opposed to
         # making views which might be altered downstream).
         self.data_dict = data_dict
-        self.total_num_val = (self.data_dict['row_boundaries']['val'] - 
-                                      self.data_dict['row_boundaries']['train'])
+        self.total_num_val = (
+            self.data_dict['row_boundaries']['val'] 
+            - self.data_dict['row_boundaries']['train']
+        )
 
         # Use model setting information to filter indices
         self.dataset_mode_to_batch_settings = {
@@ -84,40 +85,47 @@ class NPTBatchDataset(torch.utils.data.IterableDataset):
             dataset_mode: self.get_mode_n_batches(dataset_mode=dataset_mode)
             for dataset_mode in self.valid_modes}
                 
-        if self.c.exp_batch_size == -1:
+        if self.config.training.batch_size == -1:
             self.batch_size = self.dataset_mode_to_batch_settings['train'][0]
             self.batching_enabled = False
         else:
-            self.batch_size = self.c.exp_batch_size
+            self.batch_size = self.config.training.batch_size
             self.batching_enabled = True
 
         self.mode_masks = self.construct_mode_matrices()
 
         ## construct the augmentation matrices for inference in the AD mode
         (self.augmentation_mask_matrices, 
-        self.label_mask_matrix) = gen_mask_matrices(c,self.target_cols,
-                                                        data_dict['D'])
+        self.label_mask_matrix) = gen_mask_matrices(
+            config,
+            self.target_cols,
+            data_dict['D']
+        )
         self.rec_count = 0
         row_boundary_train = self.data_dict['row_boundaries']['train']
         
         self.remaining_val = (self.data_dict['row_boundaries']['val'] - 
                                 self.data_dict['row_boundaries']['train'])
         
-        if c.exp_num_train_inference==row_boundary_train:
-            self.c.full_trainset_inference = True
+        try:
+            if config.training.num_train_inference==row_boundary_train:
+                config.data.full_trainset_inference = True
+        except:
+            if config.training.num_train_inference==row_boundary_train:
+                config.data.full_trainset_inference = True
         
-        if not self.c.full_trainset_inference:
+        if not config.data.full_trainset_inference:
             self.rd_train_samples = [np.random.choice(
-                np.arange(0, row_boundary_train-c.exp_num_train_inference),
+                np.arange(0, row_boundary_train-config.training.num_train_inference),
                 size=1,
                 replace=False) for _ in 
-                range(c.exp_num_reconstruction)]
+                range(config.data.num_reconstruction)]
         else:
-            self.rd_train_samples = [np.arange(0, row_boundary_train)]*c.exp_num_reconstruction
+            self.rd_train_samples = [np.arange(0, row_boundary_train)]*config.data.num_reconstruction
             
-        if self.c.anomalies_in_inference:
+        if self.config.data.anomalies_in_inference:
             # we take the first elements of the matrix which are set to be anomalies
-            self.rd_train_samples = [np.arange(0, self.num_anom_inference)]*c.exp_num_reconstruction
+            self.rd_train_samples = [np.arange(0, self.num_anom_inference)]*config.data.num_reconstruction
                 
         # Attributes set for each train, val, and test within an epoch/mode
 
@@ -141,7 +149,7 @@ class NPTBatchDataset(torch.utils.data.IterableDataset):
                 
     def stop_selfsupervised(self):
         print('Self-supervised pre-training is over.')
-        self.c.model_is_semi_supervised = False
+        self.config.model.is_semi_supervised = False
         self.dataset_mode_to_batch_settings = {
             dataset_mode: self.get_batch_indices(dataset_mode=dataset_mode)
             for dataset_mode in self.valid_modes}
@@ -168,20 +176,22 @@ class NPTBatchDataset(torch.utils.data.IterableDataset):
         self.rec_count = 0
         
     def reset_valnum(self):
-        self.remaining_val = (self.data_dict['row_boundaries']['val'] - 
-                      self.data_dict['row_boundaries']['train'])
+        self.remaining_val = (
+            self.data_dict['row_boundaries']['val'] - 
+            self.data_dict['row_boundaries']['train']
+        )
 
     def get_mode_n_batches(self, dataset_mode):
-        if self.c.exp_batch_size == -1: 
+        if self.config.training.batch_size == -1: 
             n_batches=1
         elif not (dataset_mode=='val') :
             n_batches = int(np.ceil(
                 self.dataset_mode_to_dataset_len[dataset_mode] /
-                self.c.exp_batch_size))
+                self.config.training.batch_size))
         else:
             n_batches = int(np.ceil(
                 self.total_num_val /
-                self.c.exp_val_batchsize))
+                self.config.training.val_batchsize))
         return n_batches
 
     def compute_train_val_test_offsets(self):
@@ -197,14 +207,14 @@ class NPTBatchDataset(torch.utils.data.IterableDataset):
         self.n_batches = self.mode_to_n_batches[mode]
         self.dataset_len = self.dataset_mode_to_dataset_len[mode]
 
-        if self.c.verbose:
+        if self.config.system.verbose:
             print(
                 f'Loading {mode} batches for CV split '
                 f'{self.curr_cv_split + 1}, epoch {self.epoch + 1}.')
 
         self.batch_gen()
 
-        if self.c.verbose:
+        if self.config.system.verbose:
             print('Successfully loaded batch.')
 
     def get_batch_indices(self, dataset_mode):
@@ -220,15 +230,11 @@ class NPTBatchDataset(torch.utils.data.IterableDataset):
             mode_row_indices: np.array(dtype=np.int)
                 All row indices from the base data that must be shuffled in
                 this mode.
-            stratified_sampler: if we should mode balance the batches, this
-                class will perform the stratified batch sampling.
-                Done in all cases if the user has specified
-                c.exp_batch_mode_balancing.
         """
                 
         batch_modes, mode_balance = BATCHING_SETTINGS_MAP_AD[(
-                self.c.model_is_semi_supervised,
-                dataset_mode
+                False,
+                dataset_mode 
             )]
         # exp_batch_mode_balancing :
         # Maintain relative train, val, and test proportions in batches.
@@ -276,20 +282,10 @@ class NPTBatchDataset(torch.utils.data.IterableDataset):
             mode_indicators = np.concatenate(mode_indicators)
 
             # Perform stratified batching
-            bs = self.c.exp_batch_size
+            bs = self.config.training.batch_size
             n_splits = int(np.ceil(n_rows / bs))
 
             extra_args = {}
-
-            # Constraints:
-            # We want to class balance within batches
-            # We can -- i.e., the dataset is single-target classification
-            # We are at `dataset_mode` time. Are we even going to have
-            # train rows to class balance?
-            if (self.c.exp_batch_class_balancing and
-                    self.can_class_balance() and 0 in batch_modes):
-                extra_args['label_col'] = self.get_label_column()
-                extra_args['train_indices'] = mode_indices[0]
 
             stratified_sampler = StratifiedIndexSampler(
                 y=mode_indicators, n_splits=n_splits, shuffle=True,
@@ -404,28 +400,23 @@ class NPTBatchDataset(torch.utils.data.IterableDataset):
         self.target_loss_matrix = self.data_dict[mode_mask_matrix_str][
             row_index_order, :]
 
-        # Stochastic label masking
-        dataset_mode_mask_matrices = None
-
         self.data_arrs = [
             col[row_index_order, :]
             for col in self.data_dict['data_arrs']]
         
         if not (self.dataset_mode=='val'):
-            (self.masked_tensors, self.label_mask_matrix,
-                self.augmentation_mask_matrix) = (
-                    mask_data_for_dataset_mode(
+            self.masked_tensors, \
+            self.label_mask_matrix, \
+            self.augmentation_mask_matrix = mask_data_for_dataset_mode(
                         deterministic_label_masks=self.mode_mask_matrix,
-                        stochastic_label_masks=dataset_mode_mask_matrices,
-                        c=self.c,
+                        config=self.config,
                         cat_features=self.metadata['cat_features'],
                         bert_mask_matrix=self.bert_mask_matrix, 
                         data_arrs=self.data_arrs,
                         dataset_mode=self.dataset_mode,
-                        device=self.device,
-                        ))
+                        )
             
-            ## masked_tensors is a list of tensors, where each tensor is 2 dimensiona 
+            ## masked_tensors is a list of tensors, where each tensor is 2 dimensional 
             ## and represents a feature value + a boolean for whether the value is masked
             
             ## label_mask_matrix is a tensor matrix with boolean stating whether a label is
@@ -444,11 +435,12 @@ class NPTBatchDataset(torch.utils.data.IterableDataset):
             #hardcode en attendant de changer
             #data_arrs = copy.deepcopy(self.data_arrs)#.copy()
             
-            self.masked_tensors = apply_mask_val_ad_for_dataset(self.c, 
-                                                                self.data_arrs,
-                                                                augmentation_mask_matrix,
-                                                                self.target_cols,
-                                                                self.data_dict['row_boundaries']['train'])
+            self.masked_tensors = apply_mask_val_ad_for_dataset(
+                self.config, 
+                self.data_arrs,
+                augmentation_mask_matrix,
+                self.data_dict['row_boundaries']['train']
+            )
             
             #self.data_arrs = data_arrs
             #del data_arrs
@@ -516,18 +508,18 @@ class NPTBatchDataset(torch.utils.data.IterableDataset):
             
             # merge here the val sample and the train samples
             
-            if not self.c.exp_num_train_inference == -1:
+            if not self.config.training.num_train_inference == -1:
                 train_data_matrix = [
                         col[self.rd_train_samples[self.rec_count][0]:
                         self.rd_train_samples[self.rec_count][0] + 
-                        self.c.exp_num_train_inference]
+                        self.config.training.num_train_inference]
                         for col in self.data_arrs]
             else:
                 # take the whole training set in inference
                 train_data_matrix = [col[:self.data_dict['row_boundaries']['train']] 
                                     for col in self.data]
                 
-            if self.c.exp_mix_rows_inference:
+            if self.config.training.mix_rows_inference:
                 to_concat = []
                 for col in train_data_matrix:
                     to_concat.append(col[:,0])
@@ -545,7 +537,7 @@ class NPTBatchDataset(torch.utils.data.IterableDataset):
                                                          dim=1))
                     
                 
-            num_val = min(self.remaining_val, self.c.exp_val_batchsize)
+            num_val = min(self.remaining_val, self.config.training.val_batchsize)
             
             val_data_matrix = [
                     col[self.row_index:
@@ -567,8 +559,8 @@ class NPTBatchDataset(torch.utils.data.IterableDataset):
                                   for (col_val, col_train) 
                                   in zip(val_masked_data_matrix, train_data_matrix)]
             
-            if num_val < self.c.exp_val_batchsize:
-                col_keep = self.c.exp_val_batchsize - num_val
+            if num_val < self.config.training.val_batchsize:
+                col_keep = self.config.training.val_batchsize - num_val
                 val_mask_matrix = self.augmentation_mask_matrices[self.rec_count][col_keep:,:]
             else:
                 val_mask_matrix = self.augmentation_mask_matrices[self.rec_count] 

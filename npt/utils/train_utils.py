@@ -6,19 +6,28 @@ from torch import optim
 from npt.utils.optim_utils import Lookahead, Lamb
 
 
-def init_optimizer(c, model_parameters, device):
-    if 'default' in c.exp_optimizer:
-        optimizer = optim.Adam(params=model_parameters, lr=c.exp_lr)
-    elif 'lamb' in c.exp_optimizer:
+def init_optimizer(config, model_parameters, device):
+    if 'default' in config.training.optimizer:
+        optimizer = optim.Adam(
+            params=model_parameters,
+            lr=config.training.lr)
+    elif 'lamb' in config.training.optimizer:
         lamb = Lamb
         optimizer = lamb(
-            model_parameters, lr=c.exp_lr, betas=(0.9, 0.999),
-            weight_decay=c.exp_weight_decay, eps=1e-6)
+            model_parameters,
+            lr=config.training.lr,
+            betas=(0.9, 0.999),
+            weight_decay=config.training.weight_decay,
+            eps=1e-6
+        )
     else:
         raise NotImplementedError
 
-    if c.exp_optimizer.startswith('lookahead_'):
-        optimizer = Lookahead(optimizer, k=c.exp_lookahead_update_cadence)
+    if config.training.optimizer.startswith('lookahead_'):
+        optimizer = Lookahead(
+            optimizer,
+            k=config.training.lookahead_update_cadence
+        )
 
     return optimizer
 
@@ -30,7 +39,6 @@ def get_sorted_params(model):
             param_count_and_name.append((p.numel(), n))
 
     pprint.pprint(sorted(param_count_and_name, reverse=True))
-
 
 def count_parameters(model):
     r"""

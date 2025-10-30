@@ -104,32 +104,42 @@ class ColumnEncodingDataset:
     Tuple of (row_independent_inference, mode) jointly determines
     batching strategy for NPT model.
     """
-    def __init__(self, c, device=None):
+    def __init__(
+            self,
+            config,
+            device=None
+        ):
         super(ColumnEncodingDataset).__init__()
 
-        self.c = c
-        self.device = c.exp_device if device is None else device
+        self.config = config
+        self.device = config.system.device if device is None else device
 
         # Together with mode determines batching strategy
-        self.is_torch_model = self.get_model_details(self.c)
         self.mode = None
         self.valid_modes = ['train', 'val', 'test']
         self.old_to_new = dict()
         self.new_to_old = dict()
         self.old_indice_to_target_val = dict()
         
-        if self.c.exp_num_train_inference == -1:
-            self.c.full_trainset_inference=True
-        else:
-            self.c.full_trainset_inference=False
+        try:
+            if self.config.training.num_train_inference == -1:
+                self.config.data.full_trainset_inference=True
+            else:
+                self.config.data.full_trainset_inference=False
+        except:
+            if self.config.training.num_train_inference == -1:
+                self.config.data.full_trainset_inference=True
+            else:
+                self.config.data.full_trainset_inference=False
+
 
         # Retrieve dataset class and metadata
         try:
             self._dataset = DATASET_NAME_TO_DATASET_MAP[
-                self.c.data_set](self.c)  # type: BaseDataset 
+                self.config.data.name](self.config)  # type: BaseDataset 
         except KeyError:
             raise NotImplementedError(
-                f'Have not implemented dataset {self.c.data_set}')
+                f'Have not implemented dataset {self.config.data.name}')
 
         # Retrieve pathing information
         self.cache_path, self.model_cache_path, self.n_cv_splits = (
@@ -147,7 +157,7 @@ class ColumnEncodingDataset:
         self.dataset_gen = self.run_preprocessing_and_caching()
         self.curr_cv_split = -1
         self.cv_dataset = None
-        self.c.ratio = self._dataset.ratio
+        self.config.data.ratio = self._dataset.ratio
 
     def load_next_cv_split(self):
         self.curr_cv_split += 1
@@ -156,15 +166,6 @@ class ColumnEncodingDataset:
                 'Have loaded too many datasets for our n_cv_splits.')
 
         self.cv_dataset = self.dataset_gen
-
-    """Model and Mode Settings"""
-
-    def get_model_details(self, c):
-        """
-        :return: is_torch_model
-        """
-        # Determine if model is expecting torch tensors
-        return c.model_class == 'NPT'
 
     def set_mode(self, mode, epoch):
         assert mode in self.valid_modes
@@ -176,7 +177,7 @@ class ColumnEncodingDataset:
 
         self.mode = mode
 
-        if self.c.verbose:
+        if self.config.system.verbose:
             print(
                 f'Loading {mode} batches for CV split '
                 f'{self.curr_cv_split + 1}, epoch {epoch + 1}.')
@@ -184,7 +185,7 @@ class ColumnEncodingDataset:
         # Loads new batches in the CV dataset
         self.cv_dataset.set_mode(mode, epoch)
 
-        if self.c.verbose:
+        if self.config.system.verbose:
             print('Successfully loaded batch.')
 
     def is_mode_set(self):
@@ -193,16 +194,16 @@ class ColumnEncodingDataset:
     """Preprocessing: Pathing"""
 
     def init_cache_path_and_splits(self):
-        n_cv_splits = get_n_cv_splits(self.c)
-        ssl_str = f'ssl__{self.c.model_is_semi_supervised}'
+        n_cv_splits = get_n_cv_splits(self.config)
         cache_path = os.path.join(
-            self.c.data_path, self.c.data_set, ssl_str,
-            f'np_seed={self.c.np_seed}__n_cv_splits={n_cv_splits}'
-            f'__exp_num_runs={self.c.exp_n_runs}')
+            self.config.data.data_path,
+            self.config.data.name,
+            f'np_seed={self.config.training.np_seed}__n_cv_splits={n_cv_splits}'
+            f'__exp_num_runs={self.config.training.n_runs}')
 
-        if self.c.model_checkpoint_key is not None:
+        if self.config.system.checkpoint_key is not None:
             model_cache_path = os.path.join(
-                cache_path, self.c.model_checkpoint_key)
+                cache_path, self.config.system.checkpoint_key)
         else:
             model_cache_path = cache_path
 
@@ -221,7 +222,7 @@ class ColumnEncodingDataset:
         return cache_path, model_cache_path, n_cv_splits
 
     def are_datasets_cached(self):
-        if self.c.data_force_reload:
+        if self.config.data.data_force_reload:
             # TODO: should rename to data_force_rebuild probably
             print('Forcing data rebuild and recache.')
             return False
@@ -232,7 +233,7 @@ class ColumnEncodingDataset:
 
         expected_dataset_filenames = sorted([
             f'dataset__split={cv_split}.pkl' for cv_split in range(
-                min(self.n_cv_splits, self.c.exp_n_runs))] + [
+                min(self.n_cv_splits, self.config.training.n_runs))] + [
                 'dataset__metadata.json'])
 
         datasets_are_cached = (
@@ -262,24 +263,20 @@ class ColumnEncodingDataset:
 
     def load_datasets(self):
         
-        for cv_split in range(min(self.n_cv_splits, self.c.exp_n_runs)):
+        for _ in range(min(self.n_cv_splits, self.config.training.n_runs)):
             dataset_path = os.path.join(
                 self.cache_path, f"dataset__split={0}.pkl")
             with open(dataset_path, 'rb') as f:
                 data_dict = pickle.load(file=f)
 
-            if self.c.data_log_mem_usage:
+            if self.config.data.data_log_mem_usage:
                 print(
                     f'Recursive size of dataset: '
                     f'~{get_size(data_dict)/(1024 * 1024 * 1024):.6f}'
                     f' GB')
 
-            if self.is_torch_model:
-                return self.load_torch_dataset(data_dict)
-            else:
-                data_dict['data_arrs'] = data_dict['data_table']
-                del data_dict['data_table']
-                return data_dict
+            return self.load_torch_dataset(data_dict)
+
 
     def load_torch_dataset(self, data_dict):
         mask_torch_data = {}
@@ -290,7 +287,7 @@ class ColumnEncodingDataset:
         mask_matrix_args = {'dtype': torch.bool}
         data_table_args = {}
 
-        if self.c.data_set_on_cuda:
+        if self.config.data.dataset_on_cuda:
             mask_matrix_args['device'] = self.device
             data_table_args['device'] = self.device
 
@@ -316,18 +313,17 @@ class ColumnEncodingDataset:
 
         indice_dicts = (data_dict['old_to_new'],
                         data_dict['new_to_old'],
-                        data_dict['old_indice_to_target_val']) if self.c.ad  else None
+                        data_dict['old_indice_to_target_val'])
         
         num_anom_inference = (data_dict['num_anom_inference'] if 'num_anom_inference'
                              in data_dict.keys() else 0)
         return NPTBatchDataset(
             data_dict=mask_torch_data,
-            c=self.c,
+            config=self.config,
             curr_cv_split=self.curr_cv_split,
             metadata=self.metadata,
             device=self.device,
             sigmas=data_dict['sigmas'],
-            ad=self.c.ad,
             indice_dict=indice_dicts,
             num_anom_inference=num_anom_inference
         )
@@ -358,8 +354,7 @@ class ColumnEncodingDataset:
 
     def get_data_dict(self):
         # Get Data
-        data_dict = self._dataset.get_data_dict(
-            force_disable_auroc=False)
+        data_dict = self._dataset.get_data_dict()
         assert np.intersect1d(
             data_dict['num_features'], data_dict['cat_features']).size == 0
         return data_dict
@@ -375,7 +370,7 @@ class ColumnEncodingDataset:
         # 1. c.exp_seed
         # 2. cv_split index
 
-        if not self.c.data_force_reload:
+        if not self.config.data.data_force_reload:
             # Try loading metadata
             try:
                 self.metadata = self.load_metadata()
@@ -411,8 +406,10 @@ class ColumnEncodingDataset:
             for idx, mode in enumerate(['train','val','test']):
                 old_indices = self.dataset_gen['original_dataset_train_val_test_indices'][idx]
                 new_indices = self.dataset_gen['new_train_val_test_indices'][idx]
-                new_to_old, old_to_new = self.data_indices_dict(old_indices=old_indices,
-                                                                new_indices=new_indices)
+                new_to_old, old_to_new = self.data_indices_dict(
+                    old_indices=old_indices,
+                    new_indices=new_indices
+                )
                 self.old_to_new[mode] = old_to_new
                 self.new_to_old[mode] = new_to_old
 
@@ -421,7 +418,8 @@ class ColumnEncodingDataset:
                 _col_ = (self.dataset_gen['cat_target_cols'] if 
                         len(self.dataset_gen['cat_target_cols'])!=0 else
                         self.dataset_gen['num_target_cols'])
-                self.old_indice_to_target_val[key] = self.dataset_gen['data_table'][new,_col_]
+                self.old_indice_to_target_val[key] = self.dataset_gen[
+                    'data_table'][new,_col_]
                 
             self.dataset_gen['new_to_old']= self.new_to_old
             self.dataset_gen['old_to_new']= self.old_to_new
@@ -432,7 +430,9 @@ class ColumnEncodingDataset:
                 # stating whether data is masked or not
                 # at this stage, data is masked (==1) only for missing entries
             encoded_data = encode_data_dict(
-                    data_dict=self.dataset_gen, c=self.c)
+                    data_dict=self.dataset_gen,
+                    config=self.config
+                )
             (self.dataset_gen['data_table'],
                 self.dataset_gen['input_feature_dims'],
                 self.dataset_gen['standardisation'],  # Include mean and std
@@ -459,10 +459,7 @@ class ColumnEncodingDataset:
         return new_to_old, old_to_new
 
     def generate_classification_regression_dataset(self, data_dict):
-        """
-        TODO: docstring
-        """
-        c = self.c
+
         data_table = data_dict['data_table']
         missing_matrix = data_dict['missing_matrix']
         cat_target_cols = data_dict['cat_target_cols']
@@ -473,18 +470,17 @@ class ColumnEncodingDataset:
         num_features = data_dict['num_features']
         fixed_test_set_index = data_dict['fixed_test_set_index']
         fixed_split_indices = data_dict['fixed_split_indices']
-        num_normal = data_dict['num_normal'] if 'num_normal' in data_dict.keys() else None
-        num_anom_inference =  data_dict['num_anom_inference'] if 'num_anom_inference' in data_dict.keys() else 0
-        ad = data_dict['ad'] if 'ad' in data_dict.keys() else False
+        num_normal = (
+            data_dict['num_normal'] if 'num_normal' in data_dict.keys() 
+            else None
+        )
+        num_anom_inference =  (
+            data_dict['num_anom_inference'] 
+            if 'num_anom_inference' in data_dict.keys() 
+            else 0
+        )
 
         # Construct train-val-test generator
-
-        # For a single categorical target column, use stratified KFold
-        # For all other cases (e.g. many numerical, many categoricals/
-        # numericals, single numerical) use standard KFold
-        should_stratify = (
-            len(cat_target_cols) == 1 and len(num_target_cols) == 0)
-
         target_col_arr = np.arange(N)
 
         if fixed_split_indices is not None:
@@ -492,7 +488,10 @@ class ColumnEncodingDataset:
             train_val_test_splits = [fixed_split_indices]
         else:
             train_val_test_splits = get_class_reg_train_val_test_splits_ad(
-                target_col_arr, c, num_normal, num_anom_inference
+                label_rows=target_col_arr,
+                config=self.config,
+                num_normal=num_normal,
+                num_anom_inference=num_anom_inference,
             )
 
         # Sort data, s.t. train, val, test will be stacked after each
@@ -500,31 +499,20 @@ class ColumnEncodingDataset:
         # production setting, and should not affect our model, since we
         # are equivariant wrt. rows.
         
-        if not ad:
-            data_table = np.concatenate([
-                data_table[train_val_test_splits[0]],
-                data_table[train_val_test_splits[1]],
-                data_table[train_val_test_splits[2]]], axis=0)
-            lens = np.cumsum([0] + [len(i) for i in train_val_test_splits])
-            new_train_val_test_indices = [
-            list(range(lens[i], lens[i + 1]))
-            for i in range(len(lens) - 1)]
-            row_boundaries = {
-                'train': lens[1], 'val': lens[2], 'test': lens[3]}
-        else:
-            if self.c.full_trainset_inference:
-                self.c.exp_num_train_inference=len(train_val_test_splits[0])
-                
-            data_table = np.concatenate([
-                data_table[train_val_test_splits[0]],
-                data_table[train_val_test_splits[1]],], axis=0)
-            lens = np.cumsum([0] + [len(i) for i in train_val_test_splits[:-1]])
-            new_train_val_test_indices = [
-            list(range(lens[i], lens[i + 1]))
-            for i in range(len(lens) - 1)]
-            new_train_val_test_indices.append(new_train_val_test_indices[-1])
-            row_boundaries = {
-                'train': lens[1], 'val': lens[2], 'test': lens[2]}
+        
+        if self.config.data.full_trainset_inference:
+            self.config.training.num_train_inference = len(train_val_test_splits[0])
+            
+        data_table = np.concatenate([
+            data_table[train_val_test_splits[0]],
+            data_table[train_val_test_splits[1]],], axis=0)
+        lens = np.cumsum([0] + [len(i) for i in train_val_test_splits[:-1]])
+        new_train_val_test_indices = [
+        list(range(lens[i], lens[i + 1]))
+        for i in range(len(lens) - 1)]
+        new_train_val_test_indices.append(new_train_val_test_indices[-1])
+        row_boundaries = {
+            'train': lens[1], 'val': lens[2], 'test': lens[2]}
 
         # Build train, val, test bit matrices -- 1's where labels are
         # Since the dataset is one full matrix containing all samples
@@ -553,14 +541,9 @@ class ColumnEncodingDataset:
         # Need to rebuild missing matrix with new index ordering
         # all dataset we have do not having missing values, does 
         # not concern us
-        if not ad:
-            new_missing_matrix = missing_matrix[
-                np.concatenate(
-                    [indices for indices in new_train_val_test_indices])]
-        else:
-            new_missing_matrix = missing_matrix[
-                np.concatenate(
-                    [indices for indices in new_train_val_test_indices[:-1]])]
+        new_missing_matrix = missing_matrix[
+            np.concatenate(
+                [indices for indices in new_train_val_test_indices[:-1]])]
 
         # matrix of the size of the full dataset (train, val, test)^T
         # where value False for the label and True for the rest
@@ -572,12 +555,7 @@ class ColumnEncodingDataset:
 
         # There should be no overlap between the matrices.
         # Also no entries should be missed. This assert checks for that.
-        if not ad:
-            assert np.array_equal(
-                train_mask_matrix ^ val_mask_matrix ^ test_mask_matrix ^
-                new_missing_matrix ^ bert_mask_matrix, np.ones((N, D)))
-        else:
-            assert np.array_equal(
+        assert np.array_equal(
                 train_mask_matrix ^ val_mask_matrix ^
                 new_missing_matrix ^ bert_mask_matrix, np.ones((N, D)))
         assert not np.array_equal(
@@ -602,13 +580,11 @@ class ColumnEncodingDataset:
             train_mask_matrix=train_mask_matrix,
             val_mask_matrix=val_mask_matrix,
             test_mask_matrix=test_mask_matrix,
-            # bert_mask_matrix=bert_mask_matrix, # We don't actually need now, it will be computed in batch dataset
             original_dataset_train_val_test_indices=(
                 train_val_test_splits),
             new_train_val_test_indices=new_train_val_test_indices,
             row_boundaries=row_boundaries,
             fixed_test_set_index=fixed_test_set_index,
-            ad=ad,
             num_anom_inference=num_anom_inference,
             )
 
@@ -626,9 +602,6 @@ class NPTDataset(torch.utils.data.Dataset):
         self.cache_path = dataset.cache_path
         self.metadata = dataset.metadata
         self.batch_iter = None
-
-        # Necessary due to wandb config pickle issues in multiprocessing
-        # self.dataset.c = None
 
     def __iter__(self):
         return iter(self.batch_iter)
