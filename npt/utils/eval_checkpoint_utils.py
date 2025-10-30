@@ -15,8 +15,15 @@ class EarlyStopSignal(Enum):
 
 
 class EarlyStopCounter:
-    def __init__(self, c, data_cache_prefix, metadata, cv_index,
-                 n_splits, device=None):
+    def __init__(
+            self,
+            config,
+            data_cache_prefix,
+            metadata,
+            cv_index,
+            n_splits,
+            device=None
+        ):
         """
         :param c: config
         :param data_cache_prefix: str; cache path for the dataset. Used for
@@ -35,16 +42,16 @@ class EarlyStopCounter:
 
         # The number of times validation loss must improve prior to our
         # caching of the model
-        if c.exp_cache_cadence == -1:
+        if config.training.cache_cadence == -1:
             self.cache_cadence = float('inf')  # We will never cache
         else:
-            self.cache_cadence = c.exp_cache_cadence
+            self.cache_cadence = config.training.cache_cadence
 
         # Minimum validation loss that the counter has observed
         self.min_val_loss = float('inf')
 
-        self.patience = c.exp_patience
-        self.c = c
+        self.patience = config.training.patience
+        self.config = config
         self.cv_index = cv_index
         self.n_splits = n_splits
 
@@ -73,7 +80,7 @@ class EarlyStopCounter:
         if self.n_splits > 1:
             data_cache_prefix += f'__cv_{self.cv_index}'
 
-        self.checkpoint_setting = c.exp_checkpoint_setting
+        self.checkpoint_setting = config.training.checkpoint_setting
         self.model_cache_path = Path(data_cache_prefix) / 'model_checkpoints'
         self.best_model_path = None
 
@@ -83,7 +90,7 @@ class EarlyStopCounter:
             if not os.path.exists(self.model_cache_path):
                 os.makedirs(self.model_cache_path)
 
-            if not self.c.exp_load_from_checkpoint and not self.c.viz_att_maps:
+            if not config.training.load_from_checkpoint:
                 # Clear cache path, just in case there was a
                 # previous run with same config
                 self.clear_cache_path()
@@ -102,19 +109,18 @@ class EarlyStopCounter:
             #   * If in serial mode, or distributed mode with the GPU0 process
             #   * AND when the validation loss has improved self.cache_cadence
             #       times since the last model caching
-            if not self.c.debug_eval_row_interactions:
-                if ((self.device is None or self.device == 0) and
-                        (self.num_valid_improvements_since_cache >=
-                         self.cache_cadence)):
-                    print(
-                        f'Validation loss has improved '
-                        f'{self.num_valid_improvements_since_cache} times since '
-                        f'last caching the model. Caching now.')
-                    self.cache_model(
-                        model=model, optimizer=optimizer, scaler=scaler,
-                        val_loss=val_loss, epoch=epoch,
-                        tradeoff_annealer=tradeoff_annealer)
-                    self.num_valid_improvements_since_cache = 0
+            if ((self.device is None or self.device == 0) and
+                    (self.num_valid_improvements_since_cache >=
+                        self.cache_cadence)):
+                print(
+                    f'Validation loss has improved '
+                    f'{self.num_valid_improvements_since_cache} times since '
+                    f'last caching the model. Caching now.')
+                self.cache_model(
+                    model=model, optimizer=optimizer, scaler=scaler,
+                    val_loss=val_loss, epoch=epoch,
+                    tradeoff_annealer=tradeoff_annealer)
+                self.num_valid_improvements_since_cache = 0
         else:
             self.num_inc_valid_loss_epochs += 1
 
@@ -135,26 +141,27 @@ class EarlyStopCounter:
 
         # Initialize model and optimizer objects
         model, optimizer, scaler = init_model_opt_scaler(
-            self.c, metadata=self.metadata,
-            device=self.device)
+            self.config,
+            metadata=self.metadata,
+            device=self.device
+        )
 
         # Distribute model, if in distributed setting
-        if self.c.mp_distributed:
-            model = setup_ddp_model(model=model, c=self.c, device=self.device)
+        if self.config.system.distributed:
+            model = setup_ddp_model(
+                model=model,
+                config=self.config, 
+                device=self.device)
 
         # Load from checkpoint, populate state dicts
         checkpoint = torch.load(self.best_model_path, map_location=self.device)
         # Strict setting -- allows us to load saved attention maps
         # when we wish to visualize them
         model.load_state_dict(checkpoint['model_state_dict'],
-                              strict=(not self.c.viz_att_maps))
+                              strict=True)
 
-        if self.c.viz_att_maps:
-            optimizer = None
-            scaler = None
-        else:
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            scaler.load_state_dict(checkpoint['scaler_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        scaler.load_state_dict(checkpoint['scaler_state_dict'])
 
         print(
             f'Successfully loaded cached model from best performing epoch '
@@ -223,12 +230,6 @@ class EarlyStopCounter:
                 sleep(0.5)
 
             counter += 1
-
-        # # Save as a wandb artifact
-        # artifact = wandb.Artifact(self.c.model_checkpoint_key, type='model')
-        # artifact.add_file(str(self.best_model_path))
-        # self.wandb_run.log_artifact(artifact)
-        # self.wandb_run.join()
 
         print(
             f'Stored epoch {epoch} model checkpoint to '

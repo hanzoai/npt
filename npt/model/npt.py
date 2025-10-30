@@ -49,7 +49,7 @@ class NPTModel(nn.Module):
     `self.out_embedding()`, which applies a learned linear embedding to
     each column `D` separately.
     """
-    def __init__(self, c, metadata, device=None):
+    def __init__(self, config, metadata, device=None):
         """Initialise NPTModel.
 
         Args:
@@ -74,10 +74,8 @@ class NPTModel(nn.Module):
 
         # *** Extract Configs ***
         # cannot deepcopy wandb config.
-        #if c.mp_distributed:
-        self.c = Args(c.__dict__)
-        #else:
-        #    self.c = Args(c)
+        #if config.system.distributed:
+        self.config = config
 
         # * Main model configuration *
         self.device = device
@@ -86,18 +84,16 @@ class NPTModel(nn.Module):
         input_feature_dims = metadata['input_feature_dims']
         cat_features = metadata['cat_features']
         num_features = metadata['num_features']
-        cat_target_cols = metadata['cat_target_cols']
-        num_target_cols = metadata['num_target_cols']
 
         # * Dimensionality Configs *
         # how many attention blocks are stacked after each other
-        self.stacking_depth = c.model_stacking_depth
+        self.stacking_depth = config.model.stacking_depth
 
         # the shared embedding dimension of each attribute is given by
-        self.dim_hidden = c.model_dim_hidden
+        self.dim_hidden = config.model.dim_hidden
 
         # we use num_heads attention heads
-        self.num_heads = c.model_num_heads
+        self.num_heads = config.model.num_heads
 
         # how many feature columns are in the input data
         # apply image patching if specified
@@ -106,10 +102,10 @@ class NPTModel(nn.Module):
         self.num_input_features = len(input_feature_dims)
 
         # whether or not to add a feature type embedding
-        self.use_feature_type_embedding = c.model_feature_type_embedding
+        self.use_feature_type_embedding = config.model.feature_type_embedding
 
         # whether or not to add a feature index embedding
-        self.use_feature_index_embedding = c.model_feature_index_embedding
+        self.use_feature_index_embedding = config.model.feature_index_embedding
 
         # *** Build Model ***
 
@@ -125,20 +121,20 @@ class NPTModel(nn.Module):
 
         # Hidden dropout is applied for in- and out-embedding
         self.embedding_dropout = (
-            nn.Dropout(p=c.model_hidden_dropout_prob)
-            if c.model_hidden_dropout_prob else None)
+            nn.Dropout(p=config.model.hidden_dropout_prob)
+            if config.model.hidden_dropout_prob else None)
 
         # LayerNorm applied after embedding, before dropout
-        if self.c.model_embedding_layer_norm and device is None:
+        if self.config.model.embedding_layer_norm and device is None:
             print(
                 'Must provide a device in NPT initialization with embedding '
                 'LayerNorm.')
-        elif self.c.model_embedding_layer_norm:
+        elif self.config.model.embedding_layer_norm:
             # we batch over rows and columns
             # (i.e. just normalize over E)
             layer_norm_dims = [self.dim_hidden]
             self.embedding_layer_norm = nn.LayerNorm(
-                layer_norm_dims, eps=self.c.model_layer_norm_eps)
+                layer_norm_dims, eps=self.config.model.layer_norm_eps)
         else:
             self.embedding_layer_norm = None
 
@@ -171,7 +167,7 @@ class NPTModel(nn.Module):
                     'NPT initialization if you aim to compute feature type'
                     ' embeddings.')
 
-            if c.mp_distributed and device is None:
+            if config.system.distributed and device is None:
                 raise Exception(
                     'Must provide device to NPT initialization: in '
                     'distributed setting, and aim to do feature type '
@@ -210,7 +206,7 @@ class NPTModel(nn.Module):
         # Allows us to explicitly encode column identity, as opposed to
         # producing this indirectly through the per-column feature embeddings.
         if self.use_feature_index_embedding:
-            if c.mp_distributed and device is None:
+            if config.system.distributed and device is None:
                 raise Exception(
                     'Must provide device to NPT initialization: in '
                     'distributed setting, and aim to do feature index '
@@ -237,7 +233,7 @@ class NPTModel(nn.Module):
 
         # Need to remove the mask column if we are using BERT augmentation,
         # otherwise we just project to the same size as the input.
-        if self.c.model_bert_augmentation:
+        if self.config.model.bert_augmentation:
             get_dim_feature_out = lambda x: x - 1
         else:
             get_dim_feature_out = lambda x: x
@@ -249,8 +245,8 @@ class NPTModel(nn.Module):
             for dim_feature_encoding in input_feature_dims])
 
         # *** Gradient Clipping ***
-        if c.exp_gradient_clipping:
-            clip_value = c.exp_gradient_clipping
+        if config.training.gradient_clipping:
+            clip_value = config.training.gradient_clipping
             print(f'Clipping gradients to value {clip_value}.')
             for p in self.parameters():
                 p.register_hook(
@@ -280,8 +276,8 @@ class NPTModel(nn.Module):
 
         # *** Construct arguments for row and column attention. ***
 
-        row_att_args = {'c': self.c}
-        col_att_args = {'c': self.c}
+        row_att_args = {'config': self.config}
+        col_att_args = {'config': self.config}
 
         # Perform attention over rows first
         att_args = cycle([row_att_args, col_att_args])
@@ -290,10 +286,6 @@ class NPTModel(nn.Module):
         D = self.num_input_features
 
         enc = []
-
-        if self.c.model_hybrid_debug:
-            enc.append(Print())
-
         # Reshape to flattened representation (1, N, D*dim_input)
         enc.append(ReshapeToFlat())
 
@@ -306,10 +298,7 @@ class NPTModel(nn.Module):
     def build_hybrid_enc(self, enc, AttentionBlocks, att_args, D):
         final_shape = None
 
-        if self.c.model_hybrid_debug:
-            stack = [Print()]
-        else:
-            stack = []
+        stack = []
 
         layer_index = 0
 
@@ -324,8 +313,6 @@ class NPTModel(nn.Module):
                 stack.append(ReshapeToFlat())
                 final_shape = 'flat'
 
-                if self.c.model_hybrid_debug:
-                    stack.append(Print())
             else:
                 # Input is already in flattened shape (1, N, D*E)
 
@@ -340,9 +327,6 @@ class NPTModel(nn.Module):
                 # Reshape to nested representation
                 stack.append(ReshapeToNested(D=D))
                 final_shape = 'nested'
-
-                if self.c.model_hybrid_debug:
-                    stack.append(Print())
 
             # Conglomerate the stack into the encoder thus far
             enc += stack

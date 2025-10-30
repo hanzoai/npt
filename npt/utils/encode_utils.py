@@ -2,7 +2,7 @@ from collections import deque
 
 import numpy as np
 import torch
-from sklearn.preprocessing import OneHotEncoder, StandardScaler, LabelEncoder
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 
 def construct_encoded_col(
@@ -33,7 +33,7 @@ def construct_encoded_col(
     return np.array(encoded_col)
 
 
-def get_compute_statistics_and_non_missing_matrix(data_dict, c):
+def get_compute_statistics_and_non_missing_matrix(data_dict):
     missing_matrix = data_dict['missing_matrix']
     val_mask_matrix = data_dict['val_mask_matrix']
     test_mask_matrix = data_dict['test_mask_matrix']
@@ -45,10 +45,6 @@ def get_compute_statistics_and_non_missing_matrix(data_dict, c):
             1 - missing_matrix - val_mask_matrix -
             test_mask_matrix).astype(np.bool_)
 
-    # If production, don't compute statistics using val/test
-    if not c.model_is_semi_supervised:
-        compute_statistics_matrix[row_boundaries['train']:] = False
-
     # Matrix with a 1 entry for all non-missing elements (i.e. those
     # we should transform)
     non_missing_matrix = ~missing_matrix
@@ -57,8 +53,13 @@ def get_compute_statistics_and_non_missing_matrix(data_dict, c):
 
 
 def encode_data(
-        data_dict, compute_statistics_matrix, non_missing_matrix,
-        missing_matrix, data_dtype, use_bert_masking, c):
+        data_dict,
+        compute_statistics_matrix,
+        non_missing_matrix,
+        missing_matrix,
+        data_dtype,
+        use_bert_masking,
+    ):
     """
     :return:
     Unpacked from data_dict:
@@ -92,14 +93,10 @@ def encode_data(
     input_feature_dims = []
 
     standardisation = np.nan * np.ones((D, 2))
-    tabnet_mode = (c.model_class == 'sklearn-baselines' and
-                   c.sklearn_model == 'TabNet')
 
     # Extract just the sigmas in a JSON-serializable format
     # we use this as metadata for numerical columns to unstandardize them
     sigmas = []
-    if tabnet_mode:
-        cat_col_dims = []
 
     # compute_statistics_matrix : 
     # Matrix with a 1 entry for all elements at which we
@@ -118,19 +115,9 @@ def encode_data(
         is_cat = False
         if col_index in cat_features:
             is_cat = True
-            if tabnet_mode and col_index not in cat_target_cols:
-                # Use TabNet's label encoding
-                # https://github.com/dreamquark-ai/tabnet/blob/develop/
-                # forest_example.ipynb
-                l_enc = LabelEncoder()
-                encoded_col = np.expand_dims(
-                    l_enc.fit_transform(non_missing_col), -1)
-                num_classes = len(l_enc.classes_)
-                cat_col_dims.append(num_classes)
-            else:
-                fitted_encoder = OneHotEncoder(sparse=False).fit(
+            fitted_encoder = OneHotEncoder(sparse=False).fit(
                     non_missing_col)
-                encoded_col = fitted_encoder.transform(
+            encoded_col = fitted_encoder.transform(
                     non_missing_col).astype(np.bool_)
 
             # Stand-in for a np.nan, but JSON-serializable
@@ -142,7 +129,7 @@ def encode_data(
             standardisation[col_index, 0] = fitted_encoder.mean_[0]
             standardisation[col_index, 1] = fitted_encoder.scale_[0]
             sigmas.append(fitted_encoder.scale_[0])
-        elif c.ad and col_index==cat_target_cols[0]:
+        elif col_index==cat_target_cols[0]:
             continue
         else:
             raise NotImplementedError
@@ -174,35 +161,27 @@ def encode_data(
             # Set their mask token to 1
             encoded_col[missing_filter, -1] = 1
 
-        if not tabnet_mode:
-            # If categorical column, convert to bool
-            if is_cat:
-                encoded_col = encoded_col.astype(np.bool_)
-            else:
-                encoded_col = encoded_col.astype(data_dtype)
+
+        if is_cat:
+            encoded_col = encoded_col.astype(np.bool_)
+        else:
+            encoded_col = encoded_col.astype(data_dtype)
 
         encoded_dataset.append(encoded_col)
         input_feature_dims.append(encoded_col.shape[1])
 
-    if tabnet_mode:
-        return (
-            encoded_dataset, input_feature_dims, standardisation,
-            sigmas, cat_col_dims)
-    else:
-        return encoded_dataset, input_feature_dims, standardisation, sigmas
+    return encoded_dataset, input_feature_dims, standardisation, sigmas
 
 
-def encode_data_dict(data_dict, c):
-    # * TODO: need to vectorize for huge datasets
-    # * TODO: (i.e. can't fit in CPU memory)
+def encode_data_dict(data_dict, config):
     compute_statistics_matrix, non_missing_matrix, missing_matrix = (
-        get_compute_statistics_and_non_missing_matrix(data_dict, c))
+        get_compute_statistics_and_non_missing_matrix(data_dict))
 
-    data_dtype = get_numpy_dtype(dtype_name=c.data_dtype)
+    data_dtype = get_numpy_dtype(dtype_name=config.data.data_dtype)
 
     return encode_data(
         data_dict, compute_statistics_matrix, non_missing_matrix,
-        missing_matrix, data_dtype, c.model_bert_augmentation, c)
+        missing_matrix, data_dtype, config.model.bert_augmentation)
 
 
 def get_numpy_dtype(dtype_name):
