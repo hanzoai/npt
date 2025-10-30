@@ -11,10 +11,10 @@ class ArrhythmiaDataset(BaseDataset):
     '''
     https://archive.ics.uci.edu/static/public/5/arrhythmia.zip
     '''
-    def __init__(self, c):
+    def __init__(self, config):
         super().__init__(
             fixed_test_set_index=None)
-        self.c = c
+        self.config = config
 
         self.num_target_cols = []
         self.is_data_loaded = False
@@ -25,7 +25,7 @@ class ArrhythmiaDataset(BaseDataset):
 
     def load(self):
 
-        data = scipy.io.loadmat(os.path.join(self.c.data_path, 'arrhythmia.mat'))
+        data = scipy.io.loadmat(os.path.join(self.config.data.data_path, 'arrhythmia.mat'))
         self.data_table  = data['X']  
         self.target = ((data['y']).astype(np.int32)).reshape(-1)
 
@@ -49,12 +49,12 @@ class ArrhythmiaDataset(BaseDataset):
         self.cat_features = [1, 21, 22, 23, 24, 25, 26]
         self.num_features = [x for x in list(range(0, self.D-1)) if x not in self.cat_features]
         
-        if self.c.exp_cat_as_num_features:
+        if self.config.data.cat_as_num_features:
             print('Considering categorical features as numerical features')
             self.num_features = list(range(0, self.D-1))
             self.cat_features = []
         
-        if not self.c.exp_keep_categorical_features:
+        if not self.config.data.keep_categorical_features:
             print('Removing categorical features')
             self.data_table = self.data_table[:, self.num_features + [self.D-1]]
             self.D = self.data_table.shape[1]
@@ -67,5 +67,3 @@ class ArrhythmiaDataset(BaseDataset):
         self.num_normal = len(self.norm_samples)
         self.cat_target_cols = [self.D - 1]  # Anomaly Detection
         self.is_data_loaded = True
-        
-

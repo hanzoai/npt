@@ -32,10 +32,10 @@ class BackdoorDataset(BaseDataset):
     '''
     
         
-    def __init__(self, c):
+    def __init__(self, config):
         super().__init__(
             fixed_test_set_index=None)
-        self.c = c
+        self.config = config
 
         self.num_target_cols = []
         self.is_data_loaded = False
@@ -45,7 +45,7 @@ class BackdoorDataset(BaseDataset):
         
     def load(self):
         
-        filename = os.path.join(self.c.data_path, self.tmp_file_names[0])
+        filename = os.path.join(self.config.data.data_path, self.tmp_file_names[0])
         data = np.load(filename, allow_pickle=True)
         self.data_table  = data['X']
         self.target = ((data['y']).astype(np.int32)).reshape(-1)
@@ -66,12 +66,12 @@ class BackdoorDataset(BaseDataset):
         self.cat_features = CAT_FEATURES
         self.num_features = [ele for ele in range(self.D) if ele not in self.cat_features]
         
-        if self.c.exp_cat_as_num_features:
+        if self.config.data.cat_as_num_features:
             print('Considering categorical features as numerical features')
             self.num_features = list(range(0, self.D-1))
             self.cat_features = []
         
-        if not self.c.exp_keep_categorical_features:
+        if not self.config.data.keep_categorical_features:
             print('Removing categorical features')
             self.data_table = self.data_table[:, self.num_features + [self.D-1]]
             self.num_features = list(range(0, self.D-1))

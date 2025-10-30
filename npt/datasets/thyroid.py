@@ -8,10 +8,10 @@ from npt.datasets.base import BaseDataset
 
 class ThyroidDataset(BaseDataset):
 
-    def __init__(self, c):
+    def __init__(self, config):
         super().__init__(
             fixed_test_set_index=None)
-        self.c = c
+        self.config = config
 
         self.num_target_cols = []
         self.is_data_loaded = False
@@ -21,7 +21,7 @@ class ThyroidDataset(BaseDataset):
 
     def load(self):
 
-        data = scipy.io.loadmat(os.path.join(self.c.data_path, 'thyroid.mat'))
+        data = scipy.io.loadmat(os.path.join(self.config.data.data_path, 'thyroid.mat'))
 
         self.data_table  = data['X']  # 3772
         self.target = ((data['y']).astype(np.int32)).reshape(-1)
