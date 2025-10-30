@@ -13,7 +13,6 @@ __email__ = "thimonier.hugo@gmail.com"
 from .config_manager import NPTADConfig
 from .configs import *
 from .batch_dataset import *
-from .cli import *
 from .column_encoding_dataset import *
 from .loss import *
 from .mask import *
