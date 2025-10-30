@@ -13,10 +13,10 @@ class MulcrossDataset(BaseDataset):
     https://www.openml.org/search?type=data&sort=runs&id=40897&status=active
     '''
 
-    def __init__(self, c):
+    def __init__(self, config):
         super().__init__(
             fixed_test_set_index=None)
-        self.c = c
+        self.config = config
 
         self.num_target_cols = []
         self.is_data_loaded = False
@@ -26,7 +26,7 @@ class MulcrossDataset(BaseDataset):
 
     def load(self):
 
-        data, _ = arff.loadarff(os.path.join(self.c.data_path, 
+        data, _ = arff.loadarff(os.path.join(self.config.data.data_path, 
                                 self.tmp_file_names[0]))
         data = pd.DataFrame(data)
         self.data_table = pd.get_dummies(data.iloc[:,:-1]).to_numpy()
