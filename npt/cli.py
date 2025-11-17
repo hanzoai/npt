@@ -108,7 +108,7 @@ def cmd_train(args):
         print(f"Using preset: {args.preset}")
         if args.high_nb_features:
             args.preset += "_high_d"
-        config = NPTADConfig().get_preset(args.preset)
+        config = NPTADConfig().get_preset(args.preset, args.dataset)
     else:
         print("Using default configuration")
         config = NPTADConfig()
@@ -218,13 +218,22 @@ def cmd_list_datasets(args):
 
 def cmd_list_presets(args):
     """List available presets."""
-    presets = ['quick_test', 'small_dataset', 'medium_dataset', 'large_dataset', 'gpu_optimized']
+    presets = [
+        'quick_test',
+        'small_dataset',
+        'small_dataset_high_d',
+        'medium_dataset',
+        'medium_dataset_high_d',
+        'large_dataset',
+        'large_dataset_high_d',
+        'gpu_optimized'
+    ]
     
     print("Available configuration presets:")
     print("-" * 50)
     
     for preset in presets:
-        config = NPTADConfig().get_preset(preset)
+        config = NPTADConfig().get_preset(preset, dataset="separable")
         print(f"{preset:20} - {config.training.num_total_steps} steps, "
               f"hidden_dim={config.model.dim_hidden}, "
               f"batch_size={config.training.batch_size}")
@@ -233,7 +242,7 @@ def cmd_list_presets(args):
 def cmd_config(args):
     """Generate configuration file."""
     if args.preset:
-        config = NPTADConfig().get_preset(args.preset)
+        config = NPTADConfig().get_preset(args.preset, dataset="separable")
     else:
         config = NPTADConfig()
     

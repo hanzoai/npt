@@ -12,6 +12,7 @@ from torchmetrics import AveragePrecision, AUROC
 from torchmetrics.classification import BinaryPrecisionRecallCurve
 from sklearn.metrics import precision_recall_fscore_support as prf
 from torch.cuda.amp import GradScaler
+from torch.utils.tensorboard import SummaryWriter
 
 from npt.column_encoding_dataset import ColumnEncodingDataset, NPTDataset
 from npt.loss import Loss
@@ -21,10 +22,6 @@ from npt.utils.encode_utils import torch_cast_to_dtype
 from npt.utils.eval_checkpoint_utils import EarlyStopCounter
 from npt.config_manager import NPTADConfig
 from npt.utils.logging_utils import gen_job_name
-
-
-from torch.utils.tensorboard import SummaryWriter
-
 
 class Trainer:
     def __init__(

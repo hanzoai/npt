@@ -462,8 +462,7 @@ def quick_test(dataset_name: str = 'separable') -> Dict[str, Any]:
         Test results
     """
     # Use quick test preset
-    config = NPTADConfig().get_preset('quick_test')
-    config.data.name = dataset_name
+    config = NPTADConfig().get_preset('quick_test', dataset=dataset_name)
 
     # Train
     trainer = train_anomaly_detector(dataset_name, config)

@@ -32,7 +32,7 @@
   "training": {
     "batch_size": -1,
     "val_batchsize": 1,
-    "num_train_inference": 0,
+    "num_train_inference": -1,
     "num_total_steps": 100000.0,
     "lr": 0.001,
     "weight_decay": 0,
@@ -72,9 +72,12 @@
     "keep_categorical_features": true,
     "cat_as_num_features": true,
     "num_reconstruction": null,
-    "deterministic_masks": false,
+    "deterministic_masks": true,
     "n_hidden_features": [
-      1
+      1,
+      2,
+      3,
+      4
     ],
     "max_n_recon": 0,
     "aggregation": "sum",
