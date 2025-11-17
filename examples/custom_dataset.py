@@ -159,8 +159,7 @@ def main():
     print("\n3. Training on custom dataset...")
     try:
         # Create configuration
-        config = NPTADConfig().get_preset('quick_test')
-        config.data.dataset = 'synthetic'
+        config = NPTADConfig().get_preset('quick_test', dataset='synthetic')
         
         # Create trainer
         trainer = SimpleTrainer(config)

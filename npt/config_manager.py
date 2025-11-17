@@ -13,22 +13,22 @@ class ModelConfig:
     num_heads: int = 8
     stacking_depth: int = 8
     rff_depth: int = 1
-    
+
     # Embeddings
     feature_type_embedding: bool = True
     feature_index_embedding: bool = True
-    
+
     # Attention
     sep_res_embed: bool = True
     mix_heads: bool = True
     att_score_norm: str = 'softmax'
-    
+
     # Normalization
     embedding_layer_norm: bool = False
     att_block_layer_norm: bool = True
     pre_layer_norm: bool = True
     layer_norm_eps: float = 1e-12
-    
+
     # Dropout
     hidden_dropout_prob: float = 0.1
     att_score_dropout_prob: float = 0.1
@@ -37,14 +37,14 @@ class ModelConfig:
     bert_augmentation: bool = True
     bert_mask_percentage: float = 0.9
     augmentation_bert_mask_prob: Dict[str, float] = field(default_factory=lambda: {
-        'train': 0.15, 'val': 0.0, 'test': 0.0
+        'train': 0.15, 'val': 0.15, 'test': 0.0
     })
 
     # Weight init
     init_weights: bool = False
     init_type: str = 'xavier'
     init_params: Any = None
-    
+
     # Other
     amp: bool = False
     dtype: str = 'float32'
@@ -62,7 +62,7 @@ class TrainingConfig:
     lr: float = 1e-3
     weight_decay: float = 0.0
     gradient_clipping: float = 1.0
-    
+
     # Optimization
     optimizer: str = 'lookahead_lamb'
     scheduler: str = 'flat_and_anneal'
@@ -70,7 +70,7 @@ class TrainingConfig:
     optimizer_warmup_proportion: float = 0.7
     optimizer_warmup_fixed_n_steps: int = 10000
     minibatch_sgd: bool = True
-    
+
     # Evaluation
     eval_every_n: int = 5
     eval_every_epoch_or_steps: str = 'epochs'
@@ -82,10 +82,10 @@ class TrainingConfig:
     cache_cadence: int = 1
     checkpoint_save: int = 100000
     load_from_checkpoint: bool = False
-    
+
     # Early stopping
     patience: int = -1
-    
+
     # Seeds
     np_seed: int = 42
     torch_seed: int = 42
@@ -99,7 +99,7 @@ class DataConfig:
     # Paths
     data_path: str = './data'
     name: str = 'abalone'
-    
+
     # Data loading
     data_loader_nprocs: int = 0
     dataset_on_cuda: bool = False
@@ -107,15 +107,15 @@ class DataConfig:
     data_log_mem_usage: bool = False
     clear_tmp_files: bool = False
     data_dtype: str = 'float32'
-    
+
     # Splits
     val_perc: float = 0.1
     test_perc: float = 0.2
-    
+
     # Features
     keep_categorical_features: bool = True
     cat_as_num_features: bool = True
-    
+
     # Anomaly detection specific
     num_reconstruction: int = 15
     deterministic_masks: bool = False
@@ -137,7 +137,7 @@ class DataConfig:
             print(
                 'Data path was not provided, setting default values:\n'
                 f'./data/{self.name}')
-            self.data_path = os.path.join('.data/', self.name)
+            self.data_path = os.path.join('./data/', self.name)
 
 @dataclass
 class SystemConfig:
@@ -170,15 +170,15 @@ class NPTADConfig:
     training: TrainingConfig = field(default_factory=TrainingConfig)
     data: DataConfig = field(default_factory=DataConfig)
     system: SystemConfig = field(default_factory=SystemConfig)
-    
+
     # Anomaly detection flag
     ad: bool = True
-    
+
     def __post_init__(self):
         """Post-initialization validation and setup."""
         self._validate_config()
         self._setup_paths()
-    
+
     def _validate_config(self):
         """Validate configuration parameters."""
         # Validate model parameters
@@ -186,36 +186,36 @@ class NPTADConfig:
             raise ValueError("num_heads must be positive")
         if self.model.dim_hidden % self.model.num_heads != 0:
             raise ValueError("dim_hidden must be divisible by num_heads")
-        
+
         # Validate training parameters
         if self.training.lr <= 0:
             raise ValueError("learning rate must be positive")
         if self.training.batch_size == 0:
             raise ValueError("batch_size cannot be 0")
-        
+
         # Validate data parameters
         if not os.path.exists(self.data.data_path):
             print(f"Warning: Data path {self.data.data_path} does not exist")
-        
+
         # Validate system parameters
         if self.system.gpus <= 0:
             raise ValueError("Number of GPUs must be positive")
-    
+
     def _setup_paths(self):
         """Setup and create necessary directories."""
         # Create data directory if it doesn't exist
         os.makedirs(self.data.data_path, exist_ok=True)
-        
+
         # Create results directory
         results_dir = Path("results") / self.data.name
         os.makedirs(results_dir, exist_ok=True)
         self.res_dir = results_dir
-        
+
         # Create logs directory
         logs_dir = Path("logs") / self.data.name
         os.makedirs(logs_dir, exist_ok=True)
         self.logs_dir = logs_dir
-    
+
     @classmethod
     def from_dict(cls, config_dict: Dict) -> 'NPTADConfig':
         """Create configuration from dictionary."""
@@ -223,7 +223,7 @@ class NPTADConfig:
         training_config = TrainingConfig(**config_dict.get('training', {}))
         data_config = DataConfig(**config_dict.get('data', {}))
         system_config = SystemConfig(**config_dict.get('system', {}))
-        
+
         return cls(
             model=model_config,
             training=training_config,
@@ -231,14 +231,16 @@ class NPTADConfig:
             system=system_config,
             ad=config_dict.get('ad', True)
         )
-    
+
     @classmethod
-    def from_json(cls, json_path: str) -> 'NPTADConfig':
+    def from_json(cls, json_path: str, dataset: str = None) -> 'NPTADConfig':
         """Load configuration from JSON file."""
         with open(json_path, 'r') as f:
             config_dict = json.load(f)
+        if dataset is not None:
+            config_dict['data']['name'] = dataset
         return cls.from_dict(config_dict)
-    
+
     def to_dict(self) -> Dict:
         """Convert configuration to dictionary."""
         return {
@@ -248,29 +250,36 @@ class NPTADConfig:
             'system': self.system.__dict__,
             'ad': self.ad
         }
-    
+
     def to_json(self, json_path: str):
         """Save configuration to JSON file."""
         with open(json_path, 'w') as f:
             json.dump(self.to_dict(), f, indent=2)
-    
-    def get_preset(self, preset_name: str) -> 'NPTADConfig':
+
+    def get_preset(self, preset_name: str, dataset: str) -> 'NPTADConfig':
         """Get a preset configuration for common use cases."""
         presets = {
             'quick_test': NPTADConfig._get_quick_test_preset(),
-            'small_dataset': NPTADConfig._get_small_dataset_preset(),
-            'small_dataset_high_d': NPTADConfig._get_small_dataset_high_d_preset(),
-            'medium_dataset': NPTADConfig._get_medium_dataset_preset(),
-            'medium_dataset_high_d': NPTADConfig._get_medium_dataset_high_d_preset(),
-            'large_dataset': NPTADConfig._get_large_dataset_preset(),
-            'large_dataset_high_d': NPTADConfig._get_large_dataset_high_d_preset(),
+            'small_dataset': NPTADConfig._get_small_dataset_preset(
+                dataset=dataset),
+            'small_dataset_high_d': NPTADConfig._get_small_dataset_high_d_preset(
+                dataset=dataset),
+            'medium_dataset': NPTADConfig._get_medium_dataset_preset(
+                dataset=dataset),
+            'medium_dataset_high_d': NPTADConfig._get_medium_dataset_high_d_preset(
+                dataset=dataset),
+            'large_dataset': NPTADConfig._get_large_dataset_preset(
+                dataset=dataset),
+            'large_dataset_high_d': NPTADConfig._get_large_dataset_high_d_preset(
+                dataset=dataset),
         }
-        
+
         if preset_name not in presets:
-            raise ValueError(f"Unknown preset: {preset_name}. Available: {list(presets.keys())}")
-        
+            raise ValueError(f"Unknown preset: {preset_name}. "
+                             f"Available: {list(presets.keys())}")
+
         return presets[preset_name]
-    
+
     @classmethod
     def _get_quick_test_preset(cls) -> 'NPTADConfig':
         """Quick test configuration for debugging."""
@@ -282,47 +291,47 @@ class NPTADConfig:
         config.model.num_heads = 2
         config.system.verbose = True
         return config
-    
+
     @classmethod
-    def _get_small_dataset_preset(cls) -> 'NPTADConfig':
+    def _get_small_dataset_preset(cls, dataset: str) -> 'NPTADConfig':
         """Configuration optimized for small datasets."""
         config_dict = "./config/base/base_small_dataset.json"
-        config = cls.from_dict(config_dict)
+        config = cls.from_json(config_dict, dataset)
         return config
-    
+
     @classmethod
-    def _get_small_dataset_high_d_preset(cls) -> 'NPTADConfig':
+    def _get_small_dataset_high_d_preset(cls, dataset: str) -> 'NPTADConfig':
         """Configuration optimized for small datasets."""
         config_dict = "./config/base/base_small_dataset_high_nb_features.json"
-        config = cls.from_dict(config_dict)
+        config = cls.from_json(config_dict, dataset)
         return config
-    
+
     @classmethod
-    def _get_medium_dataset_preset(cls) -> 'NPTADConfig':
+    def _get_medium_dataset_preset(cls, dataset: str) -> 'NPTADConfig':
         """Configuration optimized for small datasets."""
         config_dict = "./config/base/base_medium_dataset.json"
-        config = cls.from_dict(config_dict)
+        config = cls.from_json(config_dict, dataset)
         return config
-    
+
     @classmethod
-    def _get_medium_dataset_high_d_preset(cls) -> 'NPTADConfig':
+    def _get_medium_dataset_high_d_preset(cls, dataset: str) -> 'NPTADConfig':
         """Configuration optimized for small datasets."""
         config_dict = "./config/base/base_medium_dataset_high_nb_features.json"
-        config = cls.from_dict(config_dict)
+        config = cls.from_json(config_dict, dataset)
         return config
-    
+
     @classmethod
-    def _get_large_dataset_preset(cls) -> 'NPTADConfig':
+    def _get_large_dataset_preset(cls, dataset: str) -> 'NPTADConfig':
         """Configuration optimized for small datasets."""
         config_dict = "./config/base/base_large_dataset.json"
-        config = cls.from_dict(config_dict)
+        config = cls.from_json(config_dict, dataset)
         return config
-    
+
     @classmethod
-    def _get_large_dataset_high_d_preset(cls) -> 'NPTADConfig':
+    def _get_large_dataset_high_d_preset(cls, dataset: str) -> 'NPTADConfig':
         """Configuration optimized for small datasets."""
         config_dict = "./config/base/base_large_dataset_high_nb_features.json"
-        config = cls.from_dict(config_dict)
+        config = cls.from_json(config_dict, dataset)
         return config
 
 
@@ -409,7 +418,7 @@ def create_config_from_args(args) -> NPTADConfig:
         'verbose': 'verbose',
         'exp_print_every_nth_forward': 'print_every_nth_forward',
         'exp_name': 'exp_name',
-        'model_checkpoint_key': 'checkpoint_key'  # <-- MODIFICATION: Added this mapping
+        'model_checkpoint_key': 'checkpoint_key'
     }
     for arg_name, config_name in system_mappings.items():
         if hasattr(args, arg_name) and getattr(args, arg_name) is not None:

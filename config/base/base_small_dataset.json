@@ -62,7 +62,7 @@
     "n_runs": 1
   },
   "data": {
-    "data_path": null,
+    "data_path": "./data",
     "name": null,
     "data_loader_nprocs": 0,
     "dataset_on_cuda": false,
@@ -75,7 +75,7 @@
     "keep_categorical_features": true,
     "cat_as_num_features": false,
     "num_reconstruction": null,
-    "deterministic_masks": false,
+    "deterministic_masks": true,
     "n_hidden_features": [
       1,
       2,

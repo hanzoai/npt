@@ -74,8 +74,7 @@ def main():
     else:
         try:
             # Small dataset preset
-            config = NPTADConfig().get_preset('small_dataset')
-            config.data.dataset = 'separable'
+            config = NPTADConfig().get_preset('small_dataset', dataset='separable')
             
             trainer = train_anomaly_detector('separable', config)
             print("Preset training completed!")
@@ -94,4 +93,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
