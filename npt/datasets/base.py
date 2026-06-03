@@ -16,7 +16,9 @@ class BaseDataset(ABC):
         train, val, and test set for comparability to prior approaches).
     """
     def __init__(
-            self, fixed_test_set_index):
+            self,
+            fixed_test_set_index
+        ):
         """
         Args:
             fixed_test_set_index: int, if specified, the dataset has a
@@ -24,17 +26,15 @@ class BaseDataset(ABC):
                 comparability to other methods.
         """
         self.fixed_test_set_index = fixed_test_set_index
-        self.c = None
-        self.data_table = None
+        self.config = None             # the NPTADConfig
+        self.data_table = None         # the dataset
         self.missing_matrix = None
-        self.N = None
-        self.D = None
-        self.cat_features = None
-        self.num_features = None
-        self.cat_target_cols = None
-        self.num_target_cols = None
-        self.auroc_setting = None
-        self.is_data_loaded = False
+        self.N = None                  # number of samples
+        self.D = None                  # number of features
+        self.cat_features = None       # categorical features indices
+        self.num_features = None       # numerical features indices
+        self.cat_target_cols = None    # indice of the target columns
+        self.is_data_loaded = False 
         self.tmp_file_or_dir_names = []  # Deleted if c.clear_tmp_files=True
 
         # fixed_split_indices: Dict[str, np.array], a fully specified
@@ -43,17 +43,15 @@ class BaseDataset(ABC):
         #   mode.
         self.fixed_split_indices = None
 
-    def get_data_dict(self, force_disable_auroc=None):
+    def get_data_dict(self,):
         if not self.is_data_loaded:
             self.load()
 
-        self.auroc_setting = False
-
         # # # For some datasets, we should immediately delete temporary files
         # # # e.g. Higgs: zipped and unzipped file = 16 GB, CV split is 3 GB
-        if self.c.data_clear_tmp_files:
+        if self.config.data.clear_tmp_files:
             print('\nClearing tmp files.')
-            path = Path(self.c.data_path) / self.c.data_set
+            path = Path(self.config.data.data_path) / self.config.data.name
             for file_or_dir in self.tmp_file_or_dir_names:
                 file_dir_path = path / file_or_dir
 

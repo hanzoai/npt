@@ -41,10 +41,10 @@ class CampaignDataset(BaseDataset):
     '''
     
         
-    def __init__(self, c):
+    def __init__(self, config):
         super().__init__(
             fixed_test_set_index=None)
-        self.c = c
+        self.config = config
 
         self.num_target_cols = []
         self.is_data_loaded = False
@@ -54,7 +54,7 @@ class CampaignDataset(BaseDataset):
         
     def load(self):
         
-        filename = os.path.join(self.c.data_path, self.tmp_file_names[0])
+        filename = os.path.join(self.config.data.data_path, self.tmp_file_names[0])
         data = np.load(filename, allow_pickle=True)
         self.data_table  = data['X']
         self.target = ((data['y']).astype(np.int32)).reshape(-1)

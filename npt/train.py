@@ -1,15 +1,18 @@
 """Contains main training operations."""
-
-import gc, os, pickle, time, sys, glob
+from typing import Dict, Tuple, Union
+import gc, os, pickle, sys, glob
 from multiprocessing import cpu_count
+from tqdm import tqdm
 
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.distributed as dist
-from tqdm import tqdm
-from torchmetrics import (AveragePrecision, AUROC)
+from torchmetrics import AveragePrecision, AUROC
 from torchmetrics.classification import BinaryPrecisionRecallCurve
 from sklearn.metrics import precision_recall_fscore_support as prf
+from torch.cuda.amp import GradScaler
+from torch.utils.tensorboard import SummaryWriter
 
 from npt.column_encoding_dataset import ColumnEncodingDataset, NPTDataset
 from npt.loss import Loss
@@ -17,35 +20,42 @@ from npt.optim import LRScheduler
 from npt.utils.batch_utils import collate_with_pre_batching
 from npt.utils.encode_utils import torch_cast_to_dtype
 from npt.utils.eval_checkpoint_utils import EarlyStopCounter
-
-from torch.utils.tensorboard import SummaryWriter
-
+from npt.config_manager import NPTADConfig
+from npt.utils.logging_utils import gen_job_name
 
 class Trainer:
     def __init__(
-            self, model, optimizer, scaler, c, cv_index,
+            self,
+            model: nn.Module,
+            optimizer: torch.optim.Optimizer,
+            scaler: GradScaler,
+            config: NPTADConfig,
+            cv_index: int,
             dataset: ColumnEncodingDataset = None,
             torch_dataset: NPTDataset = None,
             distributed_args=None,
-            ad:bool=False,):
+        ):
+
         self.model = model
         self.optimizer = optimizer
         self.scaler = scaler
         self.scheduler = LRScheduler(
-            c=c, name=c.exp_scheduler, optimizer=optimizer)
-        self.c = c
+            config=config,
+            name=config.training.scheduler,
+            optimizer=optimizer
+        )
+        self.config = config
         self.is_distributed = False
         self.rank = None
         self.dataset = dataset
         self.torch_dataset = torch_dataset
         self.max_epochs = self.get_max_epochs()
-        self.ad = ad
         self.n_iter = 0
 
         # Data Loading
         self.data_loader_nprocs = (
-            cpu_count() if c.data_loader_nprocs == -1
-            else c.data_loader_nprocs)
+            cpu_count() if config.data.data_loader_nprocs == -1
+            else config.data.data_loader_nprocs)
 
         if self.data_loader_nprocs > 0:
             print(
@@ -67,64 +77,33 @@ class Trainer:
                       (not self.is_distributed))
         
         if (self.is_distributed and self.rank==0) or (not self.is_distributed):
-            ## for logging only
-            str_train = str(self.c.model_augmentation_bert_mask_prob['train'])
-            str_val = str(self.c.model_augmentation_bert_mask_prob['val'])
-            str_type_embed = str(self.c.model_feature_type_embedding)[0]
-            str_index_embed = str(self.c.model_feature_index_embedding)[0]
-            job_name = ('TORCH_SEED_{torch_seed}__'
-                        '{dataset}__job_{jobid}__bs_{batchsize}__lr_{lr}'
-                        '__nsteps_{nsteps}__hdim_{hdim}__'
-                        'trainmaskprob_{trainmaskprob}__'
-                        'valmaskprob_{valmaskprob}__'
-                        'num_hds_{num_heads}__'
-                        'stcking_depth_{model_stacking_depth}__'
-                        'type_embed_{type_embbedding}__'
-                        'index_embed_{index_embedding}__'
-                        'ssl_{ssl}')
-            job_name= job_name.format(
-                      np_seed=self.c.np_seed,
-                      torch_seed=self.c.torch_seed,
-                      dataset=c.data_set.upper(),
-                      jobid=os.environ.get('SLURM_JOBID','') ,
-                      batchsize=str(self.c.exp_batch_size),
-                      lr=self.c.exp_lr,
-                      nsteps=int(self.c.exp_num_total_steps),
-                      hdim=self.c.model_dim_hidden,
-                      trainmaskprob=str_train,
-                      valmaskprob=str_val,
-                      num_heads=self.c.model_num_heads,
-                      model_stacking_depth=self.c.model_stacking_depth,
-                      type_embbedding=str_type_embed,
-                      index_embedding=str_index_embed,
-                      ssl=str(self.c.model_is_semi_supervised)[0],
-                      )
-            if self.c.model_is_semi_supervised:
-                job_name += f'__sslepochs_{self.c.exp_ssl_epochs}'
-                                                                 
+            job_name= gen_job_name(config)                       
                                                             
-            loss_dir = os.path.join('./tblogs', c.data_set, job_name)
+            loss_dir = os.path.join('./tblogs', config.data.name, job_name)
             if not os.path.isdir(loss_dir):
                 os.makedirs(loss_dir)
             self.writer = SummaryWriter(loss_dir)
 
 
-        if c.exp_checkpoint_setting is None and c.exp_eval_test_at_end_only:
+        if config.training.checkpoint_setting is None \
+            and config.training.eval_test_at_end_only:
             raise Exception(
                 'User is not checkpointing, but aims to evaluate the best '
                 'performing model at the end of training. Please set '
                 'exp_checkpoint_setting to "best_model" to do so.')
 
         self.early_stop_counter = EarlyStopCounter(
-            c=c, data_cache_prefix=dataset.model_cache_path,
-            metadata=dataset.metadata, cv_index=cv_index,
-            n_splits=min(dataset.n_cv_splits, c.exp_n_runs),
+            config=config,
+            data_cache_prefix=dataset.model_cache_path,
+            metadata=dataset.metadata,
+            cv_index=cv_index,
+            n_splits=min(dataset.n_cv_splits, config.training.n_runs),
             device=self.gpu)
 
         # Initialize from checkpoint, if available
         num_steps = 0
 
-        if self.c.exp_load_from_checkpoint:
+        if self.config.training.load_from_checkpoint:
             checkpoint = self.early_stop_counter.get_most_recent_checkpoint()
             if checkpoint is not None:
                 del self.model
@@ -134,11 +113,12 @@ class Trainer:
                     num_steps) = checkpoint
 
         self.loss = Loss(
-            self.c, dataset.metadata,
-            device=self.gpu, tradeoff_annealer=None,
-            is_minibatch_sgd=self.c.exp_minibatch_sgd)
+            config=self.config,
+            device=self.gpu,
+            is_minibatch_sgd=self.config.training.minibatch_sgd,
+        )
 
-        if self.c.exp_eval_every_epoch_or_steps == 'steps':
+        if self.config.training.eval_every_epoch_or_steps == 'steps':
             self.last_eval = 0
 
     def get_distributed_dataloader(self, epoch):
@@ -162,17 +142,17 @@ class Trainer:
         dataloader.sampler.set_epoch(epoch=epoch)
         total_steps = len(dataloader)
 
-        if self.c.verbose:
+        if self.config.system.verbose:
             print('Successfully loaded distributed batch dataloader.')
 
         return dataloader, total_steps
 
     def get_num_steps_per_epoch(self):
-        if self.c.exp_batch_size == -1:
+        if self.config.training.batch_size == -1:
             return 1
         
         N = self.dataset.metadata['N']
-        return int(np.ceil(N / self.c.exp_batch_size))
+        return int(np.ceil(N / self.config.training.batch_size))
 
     def get_max_epochs(self):
         # When evaluating row interactions:
@@ -183,27 +163,28 @@ class Trainer:
 
         num_steps_per_epoch = self.get_num_steps_per_epoch()
         return int(
-            np.ceil(self.c.exp_num_total_steps / num_steps_per_epoch))
+            np.ceil(self.config.training.num_total_steps / num_steps_per_epoch))
 
     def per_epoch_train_eval(self, epoch):
         early_stop = False
-        if self.c.verbose:
+        if self.config.system.verbose:
             print(f'Epoch: {epoch}/{self.max_epochs}.')
 
         # need to increase step counter by one here (because step counter is)
         # still at last step
         end_experiment = (
-                self.scheduler.num_steps + 1 >= self.c.exp_num_total_steps)
+                self.scheduler.num_steps + 1 >= self.config.training.num_total_steps)
 
-        eval_model = ((end_experiment or self.eval_check(epoch)) and
-                      not self.c.model_is_semi_supervised)
+        eval_model = (end_experiment or self.eval_check(epoch))
         # The returned train loss is used for logging at eval time
         # It is None if minibatch_sgd is enabled, in which case we
         # perform an additional forward pass over all train entries
         if self.print:
             print("running training epoch: {}".format(epoch))
-        train_loss = self.run_epoch(dataset_mode='train', epoch=epoch,
-                                        eval_model=False)
+        train_loss = self.run_epoch(
+            dataset_mode='train',
+            epoch=epoch,
+            eval_model=False)
 
         if eval_model:
             early_stop = self.eval_model(
@@ -217,7 +198,7 @@ class Trainer:
     def train_and_eval(self):
         """Main training and evaluation loop."""
 
-        if self.is_distributed and self.c.mp_no_sync != -1:
+        if self.is_distributed and self.config.system.no_sync != -1:
             curr_epoch = 1
 
             while curr_epoch <= self.max_epochs:
@@ -226,10 +207,10 @@ class Trainer:
                 with self.model.no_sync():
                     if self.print:
                         print(f'No DDP synchronization for the next '
-                              f'{self.c.mp_no_sync} epochs.')
+                              f'{self.config.system.no_sync} epochs.')
                     
                     for epoch in range(
-                            curr_epoch, curr_epoch + self.c.mp_no_sync):
+                            curr_epoch, curr_epoch + self.config.system.no_sync):
                         if self.per_epoch_train_eval(epoch=epoch):
                             return
 
@@ -237,12 +218,7 @@ class Trainer:
                             sys.exit(1)
                             return
 
-                curr_epoch += self.c.mp_no_sync
-                if (curr_epoch == self.c.exp_ssl_epochs and 
-                self.c.model_is_semi_supervised):
-                    if self.print:
-                        print('stop self supervised')
-                    self.torch_dataset.stop_selfsupervised(self.dataset.cv_dataset)
+                curr_epoch += self.config.system.no_sync
 
                 if epoch >= self.max_epochs:
                     return
@@ -259,16 +235,22 @@ class Trainer:
                 if epoch == self.max_epochs + 1:
                     break
 
-    def eval_model(self, train_loss, epoch, end_experiment, return_dicts:bool=False):
+    def eval_model(
+            self,
+            train_loss: Dict,
+            epoch: int,
+            end_experiment: bool,
+            return_dicts: bool = False
+        ):
         """Obtain val and test losses."""
         kwargs = dict(epoch=epoch, eval_model=True)
        
         val_loss_writer = []
-        for recon in range(self.c.exp_num_reconstruction):
+        for recon in range(self.config.data.num_reconstruction):
             if (self.is_distributed and self.rank==0) or (not self.is_distributed):
-                to_print= f'recon: {recon+1}/{self.c.exp_num_reconstruction:}'
+                to_print= f'recon: {recon+1}/{self.config.data.num_reconstruction:}'
                 print(f'\n{to_print:#^80}\n')
-            val_loss = self.run_epoch(dataset_mode='val', **kwargs)
+            _ = self.run_epoch(dataset_mode='val', **kwargs)
             val_log_loss = (self.loss.val_loss_logg['loss_val_epoch'] / 
                             self.loss.val_loss_logg['num_val_pred'])
                 
@@ -283,19 +265,23 @@ class Trainer:
         if (self.is_distributed and self.rank==0) or (not self.is_distributed):
             val_loss_writer = torch.mean(torch.cat(val_loss_writer))
             print('Validation Loss:', val_loss_writer)
-            self.writer.add_scalar('Validation/val_loss', val_loss_writer.item(), epoch)
+            self.writer.add_scalar(
+                'Validation/val_loss',
+                val_loss_writer.item(),
+                epoch
+            )
             
         self.val_dict = dict()
 
-        if self.c.exp_normalize_ad_loss:
-            if not self.c.exp_aggregation == 'sum':
+        if self.config.data.normalize_ad_loss:
+            if not self.config.data.aggregation == 'sum':
                 for key, item in self.loss.normalized_loss_val.items():
                     self.val_dict[key] = torch.max(torch.stack(item, dim=0))
             else:
                 for key, item in self.loss.normalized_loss_val.items():
                     self.val_dict[key] = torch.sum(torch.stack(item, dim=0))
         else:
-            if not self.c.exp_aggregation == 'sum':
+            if not self.config.data.aggregation == 'sum':
                 for key, item in self.loss.loss_val.items():
                     self.val_dict[key] = torch.max(torch.stack(item, dim=0))
             else:
@@ -305,43 +291,50 @@ class Trainer:
         self.loss.reset_val_loss()
         
         if self.is_distributed:
-            data_save_dir = os.path.join('./results', 
-                                         self.c.data_set,)
+            data_save_dir = os.path.join(
+                './results', 
+                self.config.data.name,
+            )
             if not os.path.isdir(data_save_dir) and self.rank==0:
-                    os.mkdir(data_save_dir)
+                os.mkdir(data_save_dir)
 
             ## since dictionnary gathering for multigpu is still not handled
             ## by pytorch, we save dictionnaries for each gpu for metric
             ## for metric computation. Ugly but works.
-                    
-            save_path = os.path.join('./results', 
-                                        self.c.data_set, 
-                                        self.c.res_dir)
 
-            if not os.path.isdir(save_path) and self.rank==0:
+            if not os.path.isdir(self.config.res_dir) and self.rank==0:
                 os.mkdir(save_path)
             dist.barrier()
-                
-            save_path = os.path.join(save_path, 
-                                    f'seed_{self.c.torch_seed}_dict_rank_{self.rank}_epoch_{epoch}.pt')
+
+            savename = 'seed_{}_dict_rank_{}_epoch_{}.pt'.format(
+                self.config.training.torch_seed,
+                self.rank,
+                epoch,
+            )
+            save_path = os.path.join(
+                self.config.res_dir,
+                savename
+            )
             
-            self.val_dict = {key: item.cpu() for key, item 
-                                    in self.val_dict.items()}
+            self.val_dict = {
+                key: item.cpu() for key, item 
+                in self.val_dict.items()
+            }
             
             torch.save(self.val_dict, save_path)
-            
             dist.barrier()
             
             if self.rank == 0:
                 (max_metric_dict, 
-                ratio_metric_dict) = self.compute_ad_metrics(epoch, 
-                                                            aggregation=self.c.exp_aggregation,)
-                
+                ratio_metric_dict) = self.compute_ad_metrics(
+                    epoch, 
+                )
                 
         else:
             (max_metric_dict, 
-                ratio_metric_dict) = self.compute_ad_metrics(epoch, 
-                                                            aggregation=self.c.exp_aggregation,)
+             ratio_metric_dict) = self.compute_ad_metrics(
+                    epoch,
+                )
         if return_dicts:
             if not self.is_distributed or self.rank==0:
                 return (ratio_metric_dict, max_metric_dict)
@@ -364,11 +357,9 @@ class Trainer:
         Returns:
             loss_dict: Results of model for logging purposes.
 
-        If `self.c.exp_minibatch_sgd` is True, we backpropagate after every
+        If `self.config.training.minibatch_sgd` is True, we backpropagate after every
         mini-batch. If it is False, we backpropagate once per epoch.
         """
-        print_n = self.c.exp_print_every_nth_forward
-
         # Model prep
         # We also want to eval train loss
         if (dataset_mode == 'train') and not eval_model:
@@ -393,7 +384,7 @@ class Trainer:
             batch_dataset = self.dataset.cv_dataset
             extra_args = {}
 
-            if not self.c.data_set_on_cuda:
+            if not self.config.data.dataset_on_cuda:
                 extra_args['pin_memory'] = True
 
             batch_iter = torch.utils.data.DataLoader(
@@ -404,7 +395,7 @@ class Trainer:
                 collate_fn=collate_with_pre_batching,
                 **extra_args)
             batch_iter = tqdm(
-                batch_iter, desc='Batch') if self.c.verbose else batch_iter
+                batch_iter, desc='Batch') if self.config.system.verbose else batch_iter
 
         for batch_index, batch_dict_ in enumerate(batch_iter):
             if ( (not hasattr(self,'old_indice_to_target')) and 
@@ -412,18 +403,21 @@ class Trainer:
                 self.old_indice_to_target = batch_dict_['old_indice_to_target']
 
             self.run_batch(
-                batch_dict_, dataset_mode, eval_model,
-                epoch, print_n, batch_index)
+                batch_dict_,
+                dataset_mode,
+                eval_model,
+                epoch
+            )
 
 
         # Perform batch GD?
         batch_GD = (dataset_mode == 'train') and (
-            not self.c.exp_minibatch_sgd)
+            not self.config.training.minibatch_sgd)
 
         if eval_model or batch_GD:
             # We want loss_dict either for logging purposes
             # or to backpropagate if we do full batch GD
-            loss_dict, loss_val = self.loss.finalize_epoch_losses(eval_model)
+            loss_dict, _ = self.loss.finalize_epoch_losses(eval_model)
 
         # (See docstring) Either perform full-batch GD (as here)
         # or mini-batch SGD (in run_batch)
@@ -433,7 +427,6 @@ class Trainer:
             self.scaler.scale(train_loss).backward()
             self.scaler.step(self.optimizer)
             self.scaler.update()
-
             self.scheduler.step()
             self.optimizer.zero_grad()
 
@@ -448,13 +441,18 @@ class Trainer:
         #       entries to get an eval loss.
         # - If we are doing full-batch training, we return the loss dict to
         #       immediately report loss metrics at eval time.
-        if (not eval_model) and self.c.exp_minibatch_sgd:
+        if (not eval_model) and self.config.training.minibatch_sgd:
             loss_dict = None
 
         return loss_dict
 
-    def run_batch(self, batch_dict, dataset_mode, eval_model,
-                  epoch, print_n, batch_index):
+    def run_batch(
+            self,
+            batch_dict,
+            dataset_mode,
+            eval_model,
+            epoch,
+        ):
         # In stochastic label masking, we actually have a separate
         # label_mask_matrix. Else, it is just None.
         
@@ -469,11 +467,14 @@ class Trainer:
         # val_batch size
         val_batchsize = batch_dict.get('num_val')
 
-        if not self.c.data_set_on_cuda:
-            if self.is_distributed:
-                device = self.gpu
-            else:
-                device = self.c.exp_device
+        if not self.config.data.dataset_on_cuda:
+            # In Trainer.run_batch
+            if not self.config.data.dataset_on_cuda:
+                if self.is_distributed:
+                    device = self.gpu
+                else:
+                    # Use the device specified in the config
+                    device = torch.device(self.config.system.device)
 
             # non_blocking flag is appropriate when we are pinning memory
             # and when we use Distributed Data Parallelism
@@ -485,7 +486,10 @@ class Trainer:
 
             # Cast tensors to appropriate data type
             ground_truth_tensors = [
-                torch_cast_to_dtype(obj=data, dtype_name=self.c.data_dtype)
+                torch_cast_to_dtype(
+                    obj=data,
+                    dtype_name=self.config.data.data_dtype
+                )
                 for data in ground_truth_tensors]
             ground_truth_tensors = [
                 data.to(device=device, non_blocking=True)
@@ -507,28 +511,32 @@ class Trainer:
             if label_mask_matrix is not None:
                 if isinstance(label_mask_matrix, np.ndarray):
                     label_mask_matrix = torch.tensor(label_mask_matrix)
-                    label_mask_matrix = label_mask_matrix.to(device=device, non_blocking=True)
+                    label_mask_matrix = label_mask_matrix.to(
+                        device=device, non_blocking=True)
                 else:
-                    label_mask_matrix = label_mask_matrix.to(device=device, non_blocking=True)
+                    label_mask_matrix = label_mask_matrix.to(
+                        device=device, non_blocking=True)
 
         forward_kwargs = dict(
             batch_dict=batch_dict,
             ground_truth_tensors=ground_truth_tensors,
-            masked_tensors=masked_tensors, dataset_mode=dataset_mode,
-            eval_model=eval_model, epoch=epoch,
+            masked_tensors=masked_tensors,
+            dataset_mode=dataset_mode,
+            eval_model=eval_model,
             label_mask_matrix=label_mask_matrix,
             augmentation_mask_matrix=augmentation_mask_matrix,
-            val_batchsize=val_batchsize)
+            val_batchsize=val_batchsize
+        )
 
-        # This Automatic Mixed Precision autocast is a no-op
+        # This Automatic Mixed Precision  is a no-op
         # of c.model_amp = False
-        with torch.cuda.amp.autocast(enabled=self.c.model_amp):
+        with torch.cuda.amp.autocast(enabled=self.config.model.amp):
             self.forward_and_loss(**forward_kwargs)
 
         # (See docstring) Either perform mini-batch SGD (as here)
         # or full-batch GD (as further below)
-        if (dataset_mode == 'train' and self.c.exp_minibatch_sgd
-                and (not eval_model)):
+        if (dataset_mode == 'train' and self.config.training.minibatch_sgd
+            and (not eval_model)):
             # Standardize and backprop on minibatch loss
             # if minibatch_sgd enabled
             loss_dict = self.loss.finalize_batch_losses()
@@ -536,7 +544,11 @@ class Trainer:
             train_loss = loss_dict['total_loss']
 
             if (self.is_distributed and self.rank==0) or (not self.is_distributed):
-                self.writer.add_scalar('Train/Total_loss', train_loss.item(), self.n_iter)
+                self.writer.add_scalar(
+                    'Train/Total_loss',
+                    train_loss.item(),
+                    self.n_iter
+                )
 
             # ### Apply Automatic Mixed Precision ###
             # The scaler ops will be no-ops if we have specified
@@ -564,10 +576,16 @@ class Trainer:
         self.loss.update_losses(eval_model=eval_model,)
 
     def forward_and_loss(
-            self, batch_dict, ground_truth_tensors, masked_tensors,
-            dataset_mode, eval_model, epoch, label_mask_matrix,
-            augmentation_mask_matrix, ad:bool=False, 
-            val_batchsize:int=1):
+            self,
+            batch_dict,
+            ground_truth_tensors,
+            masked_tensors,
+            dataset_mode,
+            eval_model,
+            label_mask_matrix,
+            augmentation_mask_matrix,
+            val_batchsize: int = 1
+        ):
         """Run forward pass and evaluate model loss."""
         extra_args = {}
         
@@ -578,11 +596,15 @@ class Trainer:
             output = self.model(masked_tensors, **extra_args)
 
         loss_kwargs = dict(
-            output=output, ground_truth_data=ground_truth_tensors,
+            output=output,
+            ground_truth_data=ground_truth_tensors,
             label_mask_matrix=label_mask_matrix,
             augmentation_mask_matrix=augmentation_mask_matrix,
-            data_dict=batch_dict, dataset_mode=dataset_mode,
-            eval_model=eval_model, val_batchsize=val_batchsize)
+            data_dict=batch_dict,
+            dataset_mode=dataset_mode,
+            eval_model=eval_model,
+            val_batchsize=val_batchsize
+        )
 
         # By doing loss.compute, the loss.batch_loss is replaced by its
         # new value. It will serve in up loss.update_losses() to be
@@ -592,12 +614,12 @@ class Trainer:
     def eval_check(self, epoch):
         """Check if it's time to evaluate val and test errors."""
 
-        if self.c.exp_eval_every_epoch_or_steps == 'epochs':
-            return epoch % self.c.exp_eval_every_n == 0
-        elif self.c.exp_eval_every_epoch_or_steps == 'steps':
+        if self.config.training.eval_every_epoch_or_steps == 'epochs':
+            return epoch % self.config.training.eval_every_n == 0
+        elif self.config.training.eval_every_epoch_or_steps == 'steps':
             # Cannot guarantee that we hit modulus directly.
             if (self.scheduler.num_steps - self.last_eval >=
-                    self.c.exp_eval_every_n):
+                    self.config.training.eval_every_n):
                 self.last_eval = self.scheduler.num_steps
                 return True
             else:
@@ -605,25 +627,42 @@ class Trainer:
         else:
             raise ValueError
 
-    def compute_ad_metrics(self, epoch:int=None, 
-                           return_preds:bool=False,
-                           aggregation:str='sum',):
-        
+    def compute_ad_metrics(
+            self,
+            epoch: int = None, 
+            return_preds: bool = False,
+        ) -> Tuple[Dict]:
+        """Computes the relevant metrics. The approach is ugly but works.
+
+        Args:
+            epoch (int, optional): Epoch number. Defaults to None.
+            return_preds (bool, optional): Whether to also return the validation predictions. 
+                                           Defaults to False.
+
+        Returns:
+            _type_: _description_
+        """
 
         # align target dict and score dict
-        target_dict = dict(sorted(self.dataset.cv_dataset.old_indice_to_target_val.items()))
+        target_dict = dict(
+            sorted(
+                self.dataset.cv_dataset.old_indice_to_target_val.items()
+            )
+        )
         
         filename = 'seed_{seed}_dict_rank_{rank}_epoch_{epoch}.pt'
         
         if self.is_distributed:
             for rank in range(self.world_size):
-                current_filename = filename.format(seed=self.c.torch_seed,
-                                                   rank=rank,
-                                                   epoch=epoch)
-                load_path = os.path.join('./results',
-                                         self.c.data_set,
-                                         self.c.res_dir,
-                                         current_filename)
+                current_filename = filename.format(
+                    seed=self.config.training.torch_seed,
+                    rank=rank,
+                    epoch=epoch
+                )
+                load_path = os.path.join(
+                    self.config.res_dir,
+                    current_filename
+                )
                 if rank == 0:
                     val_score_dict = torch.load(load_path)
                 else:
@@ -632,38 +671,44 @@ class Trainer:
             val_score = dict(sorted(val_score_dict.items()))
             
             _filename_ = 'seed_{seed}_epoch_{epoch}.pt'
-            current_filename = _filename_.format(seed=self.c.torch_seed,
-                                                 epoch=epoch)
-            save_path_ = os.path.join('./results',
-                                      self.c.data_set,
-                                      self.c.res_dir,
+            current_filename = _filename_.format(
+                seed=self.config.training.torch_seed,
+                epoch=epoch
+            )
+            save_path_ = os.path.join(self.config.res_dir,
                                       current_filename)
             torch.save(val_score, save_path_)
             
             rm_name = 'seed_{seed}_dict_rank_{rank}_epoch_*'
-            rm_name = rm_name.format(seed=self.c.np_seed,
-                                     rank=rank,)
-            rm_path = os.path.join('./results',
-                                   self.c.data_set,
-                                   self.c.res_dir,
-                                   rm_name)
+            rm_name = rm_name.format(
+                seed=self.config.training.np_seed,
+                rank=rank,
+            )
+            rm_path = os.path.join(
+                self.config.res_dir,
+                rm_name
+            )
             for file in glob.glob(rm_path):
                 os.remove(file)
             
         else:
             val_score = dict(sorted(self.val_dict.items()))
             val_score = {key: item.cpu() for key, item in val_score.items()}
-            target_dict = dict(sorted(self.dataset.cv_dataset.old_indice_to_target_val.items()))
+            target_dict = dict(
+                sorted(
+                    self.dataset.cv_dataset.old_indice_to_target_val.items()
+                    )
+                )
         
         target_array = np.vstack(list(target_dict.values())).flatten()
-        target_tensors = torch.as_tensor(target_array.astype(np.float),
+        target_tensors = torch.as_tensor(target_array.astype(np.float32),
                                          dtype=torch.int8).squeeze()
                 
         val_tensors = torch.stack(list(val_score.values())).squeeze()
         
         pr_curve = BinaryPrecisionRecallCurve(thresholds=None)
-        avg_prec = AveragePrecision(task="binary", pos_label=1)
-        auroc = AUROC(task="binary", pos_label=1)
+        avg_prec = AveragePrecision(task="binary")
+        auroc = AUROC(task="binary")
         
         #normalize val_score
         val_tensors = ((val_tensors - torch.mean(val_tensors)) 
@@ -681,44 +726,54 @@ class Trainer:
         best_f1 = f1s[idx_best_f1]
         thresh = thresholds[idx_best_f1]
 
-        max_metric_dict = {'seed': self.c.torch_seed,
-                           'F1':best_f1,
-                           'ap':ap,
-                           'auc': auc,}
+        seed = self.config.training.torch_seed
+
+        max_metric_dict = {
+            'seed': seed,
+            'F1': best_f1,
+            'ap': ap,
+            'auc': auc,
+        }
 
         print('F1 Score with the thereshold that maximizes it', max_metric_dict)
         
-        thresh = np.percentile(val_tensors.numpy(), self.c.ratio)
+        thresh = np.percentile(val_tensors.numpy(), self.config.data.ratio)
         target_pred = (val_tensors.numpy() >= thresh).astype(int)
         target_true = target_tensors.numpy().astype(int)
-        (_, _, f_score_ratio, _) = prf(target_true, target_pred, average='binary')
+        (_, _, f_score_ratio, _) = prf(
+            target_true,
+            target_pred,
+            average='binary'
+        )
         
-        ratio_metric_dict = {'seed': self.c.torch_seed,
-                             'F1':f_score_ratio,
-                             'ap':ap,
-                             'auc': auc,}
-        
+        ratio_metric_dict = {
+            'seed': seed,
+            'F1': f_score_ratio,
+            'ap': ap,
+            'auc': auc,
+        }
+
         print('ratio F1 Score', ratio_metric_dict)
-        
-            
+
         max_outname = (f'results_maxf1_'
                          f'epoch_{epoch}__'
-                         f'seed_{self.c.torch_seed}.pkl')
+                         f'seed_{seed}.pkl')
         ratio_outname = (f'results_ratiof1_'
                          f'epoch_{epoch}__'
-                         f'seed_{self.c.torch_seed}.pkl')
+                         f'seed_{seed}.pkl')
             
-        result_dataset_path = os.path.join('./results', self.c.data_set,)
+        result_dataset_path = os.path.join(
+            './results',
+            self.config.data.name,
+        )
         if not os.path.isdir(result_dataset_path):
             os.mkdir(result_dataset_path)
-        folder_path = os.path.join('./results', self.c.data_set, self.c.res_dir)
-        if not os.path.isdir(folder_path):
-            os.mkdir(folder_path)
 
-        for name, metric_dict in zip([max_outname, ratio_outname],
-                              [max_metric_dict, ratio_metric_dict]):
-        
-            save_path = os.path.join(folder_path, name)
+        for name, metric_dict in zip(
+            [max_outname, ratio_outname],
+            [max_metric_dict, ratio_metric_dict]
+        ):
+            save_path = os.path.join(result_dataset_path, name)
             with open(save_path, 'wb') as f:
                 pickle.dump(metric_dict, f)
 

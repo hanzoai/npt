@@ -13,10 +13,10 @@ class EcoliDataset(BaseDataset):
     https://archive.ics.uci.edu/ml/datasets/ecoli
     '''
 
-    def __init__(self, c):
+    def __init__(self, config):
         super().__init__(
             fixed_test_set_index=None)
-        self.c = c
+        self.config = config
 
         self.num_target_cols = []
         self.is_data_loaded = False
@@ -26,7 +26,7 @@ class EcoliDataset(BaseDataset):
 
     def load(self):
         
-        filename = os.path.join(self.c.data_path, self.tmp_file_names[0])
+        filename = os.path.join(self.config.data.data_path, self.tmp_file_names[0])
         data = pd.read_csv(filename, header=None, sep='\s+')
         self.anom_samples = data[data[8].isin(['omL','imL','imS'])].iloc[:,:-1]
         self.norm_samples = data[~data[8].isin(['omL','imL','imS'])].iloc[:,:-1]
