@@ -7,10 +7,10 @@ from npt.datasets.base import BaseDataset
 
 class KddDataset(BaseDataset):
 
-    def __init__(self, c):
+    def __init__(self, config):
         super().__init__(
             fixed_test_set_index=None)
-        self.c = c
+        self.config = config
 
         self.num_target_cols = []
         self.is_data_loaded = False
@@ -20,8 +20,8 @@ class KddDataset(BaseDataset):
 
     def load(self):
 
-        names_file = os.path.join(self.c.data_path, 'kdd_names.csv')
-        data_file = os.path.join(self.c.data_path, 'kddcup.data_10_percent.gz')
+        names_file = os.path.join(self.config.data.data_path, 'kdd_names.csv')
+        data_file = os.path.join(self.config.data.data_path, 'kddcup.data_10_percent.gz')
 
         df_colnames = pd.read_csv(names_file, skiprows=1, sep=':', names=['f_names', 'f_types'])
         df_colnames.loc[df_colnames.shape[0]] = ['status', ' symbolic.']
@@ -29,7 +29,7 @@ class KddDataset(BaseDataset):
         df_symbolic = df_colnames[df_colnames['f_types'].str.contains('symbolic.')]
         df_continuous = df_colnames[df_colnames['f_types'].str.contains('continuous.')]
         
-        if not self.c.exp_keep_categorical_features:
+        if not self.config.data.keep_categorical_features:
             print('Removing categorical features')
             to_remove = list(df_symbolic['f_names'])
             to_remove.remove('status') ##keep target
@@ -43,11 +43,11 @@ class KddDataset(BaseDataset):
             self.num_features.append(df_keys.get_loc(cont))
             
         self.cat_features = []
-        if self.c.exp_keep_categorical_features:
+        if self.config.data.keep_categorical_features:
             for cat in df_symbolic['f_names']:
                 self.cat_features.append(df_keys.get_loc(cat))
                 
-            if self.c.exp_cat_as_num_features:
+            if self.config.data.cat_as_num_features:
                 print('Considering categorical features as numerical features')
                 self.num_features = list(range(self.D - 1))
                 self.cat_features = []

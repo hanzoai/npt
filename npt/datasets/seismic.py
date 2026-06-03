@@ -13,10 +13,10 @@ class SeismicDataset(BaseDataset):
     https://archive.ics.uci.edu/ml/datasets/seismic-bumps
     '''
 
-    def __init__(self, c):
+    def __init__(self, config):
         super().__init__(
             fixed_test_set_index=None)
-        self.c = c
+        self.config = config
 
         self.num_target_cols = []
         self.is_data_loaded = False
@@ -26,7 +26,12 @@ class SeismicDataset(BaseDataset):
 
     def load(self):
 
-        data, _ = arff.loadarff(os.path.join(self.c.data_path, self.tmp_file_names[0]))
+        data, _ = arff.loadarff(
+            os.path.join(
+                self.config.data.data_path,
+                self.tmp_file_names[0]
+                )
+            )
         data = pd.DataFrame(data)
         self.data_table = data.iloc[:,:-1]
         self.data_table = pd.get_dummies(self.data_table).to_numpy()

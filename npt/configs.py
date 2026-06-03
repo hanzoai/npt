@@ -24,7 +24,7 @@ def build_parser():
         '--data_path', type=str, default='data',
         help='Path of data')
     parser.add_argument(
-        '--data_set', type=str, default='abalone',
+        '--dataset', type=str, default='abalone',
         help='accepted values are currently: '
             'abalone, forestcoverad, mammography, satellite, vertebral, '
             'annthyroid, glass, mnistad, satimage, vowels, '
@@ -40,7 +40,7 @@ def build_parser():
              'process is used in data loading. Applies for serial and '
              'distributed training.')
     parser.add_argument(
-        '--data_set_on_cuda', type='bool', default=False,
+        '--dataset_on_cuda', type='bool', default=False,
         help='Place the entire dataset and metadata necessary per epoch on '
              'the CUDA device. Appropriate for smaller datasets.')
     parser.add_argument(
@@ -476,22 +476,6 @@ def build_parser():
         type=int,
         default=1,
         help=f'Number of layers in rFF block.')
-
-    ###########################################################################
-    # #### Visualization  #####################################################
-    ###########################################################################
-
-    parser.add_argument(
-        '--viz_att_maps',
-        default=False,
-        type='bool',
-        help=f'Using config settings, attempt to load most recent checkpoint '
-             f'and produce attention map visualizations.')
-    parser.add_argument(
-        '--viz_att_maps_save_path',
-        default='data/attention_maps',
-        type=str,
-        help=f'Save attention maps to file. Specify the save path here.')
 
     return parser
 

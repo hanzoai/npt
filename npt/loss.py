@@ -35,22 +35,25 @@ class Loss:
 
     """
     def __init__(
-            self, c, metadata, is_minibatch_sgd,
-            device=None, tradeoff_annealer=None):
+            self,
+            config,
+            is_minibatch_sgd,
+            device=None,
+        ):
         """
 
         :param c:
-        :param metadata:
         :param is_minibatch_sgd
         :param device: Must be set for distributed setting.
-        :param sigmas: Standard deviation values of training set (one per col).
         """
-        self.c = c
+        self.config = config
         self.cross_ent_loss = nn.CrossEntropyLoss(reduction='sum')
         self.cross_ent_loss_no_sum = nn.CrossEntropyLoss(reduction='none')
         self.reset()
         self.is_minibatch_sgd = is_minibatch_sgd
-        self.device = self.c.exp_device if device is None else device
+        dev = torch.device('cuda') if torch.cuda.is_available() \
+              else torch.device('cpu')
+        self.device = dev if device is None else device
 
         self.loss_modes = ['augmentation', 'label']
         self.loss_stats = [
@@ -62,10 +65,10 @@ class Loss:
         self.loss_val = dict()
         self.normalized_loss_val = dict()
         self.current_loss_val = dict()
-        self.val_loss_logg = {'num_val_pred':0, 
-                              'loss_val_epoch':torch.tensor([0.], 
-                                                            device=self.device),
-                             }
+        self.val_loss_logg = {
+            'num_val_pred': 0, 
+            'loss_val_epoch': torch.tensor([0.], device=self.device),
+            }
 
     def reset(self):
         """Reset batch and epoch losses."""
@@ -74,9 +77,10 @@ class Loss:
         
     def reset_logs(self):
         """Reset value stored for val loggs"""
-        self.val_loss_logg = {'num_val_pred':0, 
-                              'loss_val_epoch':torch.tensor([0.], device=self.device),
-                              }
+        self.val_loss_logg = {
+            'num_val_pred':0, 
+            'loss_val_epoch':torch.tensor([0.], device=self.device),
+            }
 
 
     def compute(self, *args, **kwargs):
@@ -222,7 +226,7 @@ class Loss:
         # number of rows/cols per batch. We are trying to avoid a CUDA sync.
         # if augmentation_mask_matrix is None or (
         #         augmentation_mask_matrix.sum() == 0):
-        if self.c.model_augmentation_bert_mask_prob[dataset_mode] == 0:
+        if self.config.model.augmentation_bert_mask_prob[dataset_mode] == 0:
             loss_indices['augmentation'] = None
         else:
             loss_indices['augmentation'] = augmentation_mask_matrix
@@ -240,12 +244,12 @@ class Loss:
         # Compute losses per column
         for col, (out, dat) in enumerate(zip(output, ground_truth_data)):
             is_cat = col in data_dict['cat_features']
-            if not is_cat and self.c.data_set not in ['cifar10']:
+            if not is_cat and self.config.data.name not in ['cifar10']:
                 sigma = data_dict['sigmas'][col]
             else:
                 sigma = None
 
-            if self.c.model_bert_augmentation:
+            if self.config.model.bert_augmentation:
                 # Remove mask from ground truth data
                 dat = dat[:, :-1]
 
@@ -351,7 +355,7 @@ class Loss:
         # Trade-off loss on target columns and loss from augmentation masking.
         std_dict['total_loss'] = self.balance_self_supervision(raw_dict)
 
-        if not eval_model and not self.c.exp_print_every_nth_forward:
+        if not eval_model and not self.config.system.print_every_nth_forward:
             return std_dict
 
         # *** Logging Extra Losses ***
@@ -439,7 +443,9 @@ class Loss:
                 sys.exit(1)
                 
             long_data = torch.argmax(
-                torch_cast_to_dtype(obj=data, dtype_name=self.c.data_dtype),
+                torch_cast_to_dtype(
+                    obj=data,
+                    dtype_name=self.config.data.data_dtype),
                 dim=1).to(device=self.device)
 
             # Compute sum of cross_entropy losses.
@@ -458,7 +464,7 @@ class Loss:
                         self.current_loss_val[old_idx] = inter_loss[i]
 
             # We use the unreduced loss above - reduce here
-            loss = loss.sum()
+            loss = inter_loss.sum()
             
             # We do this infrequently, because it forces a CUDA sync
             if eval_model:
@@ -500,7 +506,7 @@ class Loss:
                       
             extra_out['num_mse_loss'] = loss.detach()
 
-            if eval_model and self.c.data_set not in ['cifar10']:
+            if eval_model and self.config.data.name not in ['cifar10']:
                 # also record unnormalised MSE values at evaluation time
                 # on regression columns
                 mse_unstd = extra_out['num_mse_loss'] * sigma**2

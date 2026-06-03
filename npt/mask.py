@@ -11,7 +11,12 @@ from npt.utils.encode_utils import get_torch_dtype, get_torch_tensor_type
 
 
 def apply_mask(
-        data_arrs, mask_candidates, cat_features, mask_prob, c):
+        data_arrs,
+        mask_candidates,
+        cat_features,
+        mask_prob, 
+        config
+    ):
     """Apply mask_candidates to input data_arrs.
 
     Input:
@@ -35,21 +40,20 @@ def apply_mask(
             were set.
 
     """
-    if c.data_set_on_cuda:
-        device = c.exp_device
+    if config.data.dataset_on_cuda:
+        device = config.system.device
     else:
         device = 'cpu'
 
     num_examples = data_arrs[0].shape[0]
 
     # Relevant for production setting only
-    if not c.model_is_semi_supervised:
-        # Filter out all mask_candidates which are not present in data_arrs.
-        # (I.e. at train mode, we are not given anything in test or val.)
-        # Since we sort the data_arrs row-wise by train, val, test, we can be
-        # sure that all mask_candidates with row indices larger than
-        # need not be considered.
-        mask_candidates = mask_candidates[:num_examples]
+    # Filter out all mask_candidates which are not present in data_arrs.
+    # (I.e. at train mode, we are not given anything in test or val.)
+    # Since we sort the data_arrs row-wise by train, val, test, we can be
+    # sure that all mask_candidates with row indices larger than
+    # need not be considered.
+    mask_candidates = mask_candidates[:num_examples]
 
     # Mask features
 
@@ -100,7 +104,7 @@ def apply_mask(
 
         # Proportion for which to zero out.
         bert_random_mask_proportion = 1 - int(
-            c.model_bert_mask_percentage * len(mask_indices))
+            config.model.bert_mask_percentage * len(mask_indices))
 
         # Since the mask_indices have already been chosen at random
         # we can just use slicing to select the indices this time.
@@ -184,7 +188,7 @@ def apply_mask(
         #   Sample new entry values for selected entries in this row
         #   from normal distribution.
         else:
-            data_dtype = get_torch_dtype(dtype_name=c.data_dtype)
+            data_dtype = get_torch_dtype(dtype_name=config.data.data_dtype)
             data_arr[bert_random_mask_col, 0] = torch.normal(
                 mean=0, std=1,
                 size=[bert_random_mask_col.sum()], dtype=data_dtype,
@@ -195,9 +199,8 @@ def apply_mask(
 
 def mask_data_for_dataset_mode(
         deterministic_label_masks,  # e.g. at train mask train, test, val
-        stochastic_label_masks,     # e.g. contains only train for train
-        c, cat_features, bert_mask_matrix,
-        data_arrs, dataset_mode, device,):
+        config, cat_features, bert_mask_matrix,
+        data_arrs, dataset_mode,):
     """
     Mask data table for the current dataset mode (e.g. at train time,
     val time, or test time).
@@ -256,7 +259,7 @@ def mask_data_for_dataset_mode(
             mask_candidates=mask_candidates,
             cat_features=cat_features,
             mask_prob=1,
-            c=c))
+            config=config))
     # Set this to none because label_mask_matrix is all possible values.
     label_mask_matrix = None
 
@@ -265,35 +268,41 @@ def mask_data_for_dataset_mode(
     # ****** 2 – FEATURE MASKING *******
     # ##################################
 
-    if c.model_augmentation_bert_mask_prob[dataset_mode] > 0:
+    if config.model.augmentation_bert_mask_prob[dataset_mode] > 0:
     # bert_mask_matrix : Specifies all the places at which we 
     # may use BERT masking, and compute an augmentation loss 
-        masked_arrs, augmentation_mask_matrix = (
-            apply_mask(
+        mask_prob = config.model.augmentation_bert_mask_prob[dataset_mode]
+        masked_arrs, augmentation_mask_matrix = apply_mask(
                 data_arrs=masked_arrs,
                 mask_candidates=bert_mask_matrix,
                 cat_features=cat_features,
-                mask_prob=(c.model_augmentation_bert_mask_prob[dataset_mode]),
-                c=c))
+                mask_prob=mask_prob,
+                config=config
+            )
     else:
         augmentation_mask_matrix = None
 
     # masked_arrs are already torch now -- move to GPU
-    data_dtype = get_torch_tensor_type(c.data_dtype)
+    data_dtype = get_torch_tensor_type(config.data.data_dtype)
 
     masked_tensors = [
         masked_arr.type(data_dtype) for masked_arr in masked_arrs]
 
-    if c.data_set_on_cuda:
+    if config.data.dataset_on_cuda:
         masked_tensors = [
-            masked_arr.type(data_dtype).to(device=c.exp_device)
+            masked_arr.type(data_dtype).to(device=config.system.device)
             for masked_arr in masked_arrs]
 
-    return (
-        masked_tensors, label_mask_matrix, augmentation_mask_matrix)
+    return (masked_tensors,
+            label_mask_matrix,
+            augmentation_mask_matrix)
 
 
-def gen_mask_matrices(c, target_col, D):
+def gen_mask_matrices(
+        config,
+        target_col,
+        D
+    ):
 
     ## we construct mask matrices as follows:
     ## we mask only for sample which belong to the val set
@@ -305,22 +314,22 @@ def gen_mask_matrices(c, target_col, D):
 
     # label mask matrix is equal to True for the whold target column for both
     # train and validation
-    label_mask_matrix = torch.zeros((c.exp_val_batchsize + 
-                                     c.exp_num_train_inference,
+    label_mask_matrix = torch.zeros((config.training.val_batchsize + 
+                                     config.training.num_train_inference,
                                      D), dtype=torch.bool)
     label_mask_matrix[:,target_col[0]-1] = 1
 
     existing_masks = []
     num_masks = 0
-    if not c.exp_deterministic_masks:
-        for recon in range(c.exp_num_reconstruction):
+    if not config.data.deterministic_masks:
+        for recon in range(config.data.num_reconstruction):
                 mask_candidates = torch.ones(D, dtype=torch.bool)
                 # replace the target column by zero: not eligible for 
                 # masking since already masked by label_mask_matrix
                 mask_candidates[target_col[0]] = 0
                 mask_entries = torch.nonzero(mask_candidates, as_tuple=False)
                 Nm = len(mask_entries)
-                mask_prob = c.model_augmentation_bert_mask_prob['val']
+                mask_prob = config.model.augmentation_bert_mask_prob['val']
                 std = np.sqrt(Nm * mask_prob * (1 - mask_prob))
 
                 # This gives the total number of masks sampled in our approximative
@@ -342,7 +351,8 @@ def gen_mask_matrices(c, target_col, D):
                     mask_indices_indices = np.random.choice(
                             np.arange(0, Nm),
                             size=num_masks_sampled,
-                            replace=False)
+                            replace=False
+                        )
 
 
                     mask_indices = mask_entries[mask_indices_indices, :]
@@ -358,22 +368,26 @@ def gen_mask_matrices(c, target_col, D):
 
                     num_masks = len(existing_masks)
                     
-                mask_val_matrix = (torch.stack([mask]*c.exp_val_batchsize) 
-                          if c.exp_val_batchsize>1 else mask.unsqueeze(0))
-                mask_train_matrix = torch.stack([~mask_candidates] * c.exp_num_train_inference)
+                mask_val_matrix = (torch.stack([mask]*config.training.val_batchsize) 
+                          if config.training.val_batchsize>1 else mask.unsqueeze(0))
+                mask_train_matrix = torch.stack(
+                    [~mask_candidates] * config.training.num_train_inference
+                    )
                 augmentation_mask_matrix = torch.cat((mask_val_matrix, mask_train_matrix))
 
                 augmentation_mask_matrices.append(augmentation_mask_matrix)
                 
     else:
-        c.exp_num_reconstruction = 0
-        c.exp_n_hidden_features = list(set(c.exp_n_hidden_features)) #remove duplicates
+        config.data.num_reconstruction = 0
+        config.data.n_hidden_features = list(set(config.data.n_hidden_features)) #remove duplicates
         # exp_n_hidden_features always contains 1, if not value is passed
         # it will output a mask for every feature i.e. D-1 reconstruction
-        c.exp_n_hidden_features = [x for x in c.exp_n_hidden_features
-                                   if (x < D-1) & (x > 0)]
-        for n_feature in sorted(c.exp_n_hidden_features):
-            c.exp_num_reconstruction += math.comb(D-1, n_feature)
+        config.data.n_hidden_features = [
+            x for x in config.data.n_hidden_features
+            if (x < D-1) & (x > 0)
+        ]
+        for n_feature in sorted(config.data.n_hidden_features):
+            config.data.num_reconstruction += math.comb(D-1, n_feature)
             for ele in itertools.combinations(range(D-1), n_feature):
                 mask = torch.zeros(D, dtype=torch.bool)
                 mask_candidates = torch.ones(D, dtype=torch.bool)
@@ -382,32 +396,35 @@ def gen_mask_matrices(c, target_col, D):
                     
                 mask[ele,] = 1
                     
-                mask_val_matrix = (torch.stack([mask]*c.exp_val_batchsize) 
-                                    if c.exp_val_batchsize>1 else mask.unsqueeze(0))
-                mask_train_matrix = torch.stack([~mask_candidates] * c.exp_num_train_inference)
+                mask_val_matrix = (torch.stack([mask]*config.training.val_batchsize) 
+                                    if config.training.val_batchsize>1 else mask.unsqueeze(0))
+                mask_train_matrix = torch.stack([~mask_candidates] * config.training.num_train_inference)
                 augmentation_mask_matrix = torch.cat((mask_val_matrix, mask_train_matrix))
 
                 augmentation_mask_matrices.append(augmentation_mask_matrix)
                 
-        if c.exp_max_n_recon > 0:
-            augmentation_mask_matrices = sample(augmentation_mask_matrices, 
-                                                c.exp_max_n_recon)
-            c.exp_num_reconstruction = len(augmentation_mask_matrices)
+        if config.data.max_n_recon > 0:
+            augmentation_mask_matrices = sample(
+                augmentation_mask_matrices, 
+                config.data.max_n_recon
+            )
+            config.data.num_reconstruction = len(augmentation_mask_matrices)
             
 
     return (augmentation_mask_matrices, label_mask_matrix)
 
-def apply_mask_val_ad_for_dataset(c, 
-                            data_arrs,
-                            augmentation_mask_matrix:torch.tensor,
-                            target_col:int,
-                            train_idx):
+def apply_mask_val_ad_for_dataset(
+        config, 
+        data_arrs,
+        augmentation_mask_matrix:torch.tensor,
+        train_idx
+    ):
 
     # we only require the first lign of the matrix by construction
     mask = augmentation_mask_matrix[0, :]
     
     # masked_arrs are already torch now -- move to GPU
-    data_dtype = get_torch_tensor_type(c.data_dtype)
+    data_dtype = get_torch_tensor_type(config.data.data_dtype)
 
     # generate masked tensor: here all tensors in the val matrix
     # should be masked the same way, differs from apply_mask()
@@ -432,9 +449,8 @@ def apply_mask_val_ad_for_dataset(c,
         masked_tensors.append(masked_arr.type(data_dtype))
         del masked_arr
 
-    if c.data_set_on_cuda:
-        masked_tensors = [masked_arr.to(device=c.exp_device) for
+    if config.data.dataset_on_cuda:
+        masked_tensors = [masked_arr.to(device=config.system.device) for
                          masked_arr in masked_tensors]
 
     return masked_tensors
-

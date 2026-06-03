@@ -1,83 +1,261 @@
-# Beyond Individual Input for Deep Anomaly Detection on Tabular Data
+# NPT-AD: Non-Parametric Transformers for Anomaly Detection
 
 [![arXiv](https://img.shields.io/badge/arXiv-2305.15121-b31b1b.svg)](https://arxiv.org/abs/2305.15121)
+[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+Implementation of Non-Parametric Transformers for anomaly detection on tabular data.
 
 ## Overview
 
-This repo contains the code to run the experiments presented in our paper "Beyond Individual Input for Deep Anomaly Detection on Tabular Data".
+This repository contains of the NPT-AD (Non-Parametric Transformers for Anomaly Detection) method. The original code has been refactored to be more accessible and easier to use for both researchers and practitioners.
 
-The ``npt`` folder contains the main code to run the experiments. This folder was originally forked from https://github.com/OATML/non-parametric-transformers and was adapted to our problem, please cite their work if you use this code.
+## Quick Start
 
-## Abstract
+### Installation
 
-Anomaly detection is crucial in various domains, such as finance, healthcare, and cybersecurity. In this paper, we propose a novel deep anomaly detection method for tabular data that leverages Non-Parametric Transformers (NPTs), a model initially proposed for supervised tasks, to capture both feature-feature and sample-sample dependencies. In a reconstruction-based framework, we train the NPT model to reconstruct masked features of normal samples. We use the model's ability to reconstruct the masked features during inference to generate an anomaly score. To the best of our knowledge, our proposed method is the first to combine both feature-feature and sample-sample dependencies for anomaly detection on tabular datasets. We evaluate our method on an extensive benchmark of tabular datasets and demonstrate that our approach outperforms existing state-of-the-art methods based on both the F1-Score and AUROC. Moreover, our work opens up new research directions for exploring the potential of NPTs for other tasks on tabular data. 
-
-## Installation
-
-Set up and activate the Python environment by executing
-
-```
-conda env create -f environment.yml
+1. Clone the repository:
+```bash
+git clone git@github.com:hugothimonier/NPT-AD.git
+cd NPT-AD
 ```
 
-## Datasets
-
-To download all datasets at once, with `wget`:
-```
-bash get_dataset_wget.sh
-```
-with `curl`:
-```
-bash get_dataset_curl.sh
+2. Create and activate the conda environment:
+```bash
+conda create -n nptad python=3.8
+conda activate nptad
+pip install -r requirements.txt
 ```
 
-The `data` folder contains the synthetic data, `separable`, used to run the experiments in section 5.1 of the paper.
+### Basic Usage
 
-To add a custom dataset:
-- Construct a dataset class inheriting the `BaseDataset` class from `npt/datasets/base.py`.
-- Add this dataset class to the imports and in the `DATASET_NAME_TO_DATASET_MAP` dictionnary in the `npt/column_encoding_dataset.py` file.
+#### Python API
 
-## Experiments
+```python
+from npt.simple_trainer import train_anomaly_detector
+from npt.config_manager import NPTADConfig
 
-To run the experiments for each dataset:
-```
-source ./scripts/abalone.sh
-```
-where ``abalone`` can be replaced by any dataset in the paper. By default we set either 8 or 4 as the number of GPUs. To change the number of GPUs:
-modify the ``.sh`` files accordingly with 
-```
---nnodes=$NUMBER_OF_NODE --nproc_per_node=$NUMBER_OF_GPUS_PER_NODE
-``` 
-```
---mp_nodes $NUMBER_OF_NODE        #number of computing nodes
---mp_gpus $TOTAL_NUMBER_OF_GPUS   #total number of gpus
-``` 
+# Base configuration with default values
+config = NPTADConfig()
 
-For mono-GPU or CPU only:
-```
-source ./scripts/cpu/abalone.sh
+# modify parameters of your choice
+config.training.num_total_steps = 5000
+config.model.dim_hidden = 64
+
+trainer = train_anomaly_detector('abalone', config)
 ```
 
-### Conda bugs
+#### Command Line Interface
 
-You may face problems related to conda when launching the `.sh` files. A workaround is to add the following in the file (before activating the environment),
+```bash
+# Quick test
+python -m npt.cli test --dataset separable
+
+# Train with custom settings
+python -m npt.cli train --dataset abalone --steps 5000 --batch-size 32 --n_runs 5
+
+# List available datasets
+python -m npt.cli list-datasets
+
+# Generate configuration file
+python -m npt.cli config --preset small_dataset --output my_config.json
 ```
-source ~/anaconda3/etc/profile.d/conda.sh
+
+### Examples
+
+Check out the `examples/` directory for comprehensive examples:
+
+- `quick_start.py`: Basic usage examples
+- `custom_dataset.py`: How to create and use custom datasets
+
+## Configuration
+
+NPT-AD uses a configuration system with **defaults** and **presets**.
+
+### Presets
+
+- `quick_test`: Fast testing with minimal resources
+- `small_dataset`: Optimized for small datasets ($n<1000$).
+- `small_dataset_high_d`: Optimized for small datasets ($n<1000$) with a number of features higher than 20 ($d>20$). 
+- `medium_dataset`: Optimized for medium datasets ($1000<n<10,000$).
+- `medium_dataset_high_d`: Optimized for medium datasets ($1000<n<10,000$) with a number of features higher than 20 ($d>20$).
+- `large_dataset`: Optimized for large datasets ($n>10,000$).
+- `large_dataset_high_d`: Optimized for large datasets ($n>10,000$) and a number of features higher than 20 ($d>20$). 
+
+```bash
+# Train with preset setting on a custom dataset
+python -m npt.cli train --dataset custom_dataset --preset medium_dataset_high_d
 ```
-where `~/` can be replaced accordingly depending on the location of your anaconda installation. 
+
+One can also modify the preset parameters by adding arguments:
+
+```bash
+# Train with preset setting on a custom dataset
+python -m npt.cli train --dataset custom_dataset --preset medium_dataset_high_d --steps 5000 --batch-size 32
+```
+
+### Custom Configuration
+
+```python
+from npt.config_manager import NPTADConfig
+
+config = NPTADConfig()
+
+# Model settings
+config.model.dim_hidden = 128
+config.model.num_heads = 8
+config.model.stacking_depth = 6
+
+# Training settings
+config.training.num_total_steps = 10000
+config.training.lr = 0.001
+config.training.batch_size = 32
+
+# Data settings
+config.data.dataset = 'your_dataset'
+config.data.data_path = 'path/to/your/data'
+```
+
+## Adding Custom Datasets
+
+### Method 1: Using the Dataset Registry
+
+```python
+from npt.datasets.dataset_registry import create_simple_dataset, DatasetRegistry
+import pandas as pd
+import numpy as np
+
+# From pandas DataFrame
+df = pd.read_csv('your_data.csv')
+YourDataset = create_simple_dataset(
+    name='your_dataset',
+    data_source=df,
+    target_column='anomaly_label',
+    categorical_columns=['cat_feature_1', 'cat_feature_2'],
+    numerical_columns=['num_feature_1', 'num_feature_2']
+)
+
+# Register the dataset
+DatasetRegistry.register('your_dataset', YourDataset)
+
+# Use it
+trainer = train_anomaly_detector('your_dataset')
+```
+
+### Method 2: Custom Dataset Class
+
+If the former does not work, one can directly create a custom dataset class following the defined `BaseDataset` class.
+
+```python
+from npt.datasets.base import BaseDataset
+import pandas as pd
+
+class YourCustomDataset(BaseDataset):
+    def __init__(self, config):
+        super().__init__(fixed_test_set_index=None)
+        self.config = config
+        self.is_data_loaded = False
+    
+    def load(self):
+        # Your data loading logic here
+        df = pd.read_csv('your_data.csv')
+        # ... process data ...
+        self.is_data_loaded = True
+
+# Register and use
+DatasetRegistry.register('your_custom', YourCustomDataset)
+```
+
+## Available Datasets
+
+The following datasets are included by default:
+
+- `abalone`: Abalone dataset from UCI ML Repository
+- `separable`: Synthetic separable dataset for testing
+- `annthyroid`: Thyroid dataset
+- `arrhythmia`: Arrhythmia dataset
+- `backdoor`: Backdoor dataset
+- `breastw`: Breast cancer dataset
+- `campaign`: Campaign dataset
+- `cardio`: Cardiotocography dataset
+- `ecoli`: E.coli dataset
+- `fraud`: Fraud dataset
+- `glass`: Glass identification dataset
+- `ionosphere`: Ionosphere dataset
+- `letter`: Letter recognition dataset
+- `lympho`: Lymphography dataset
+- `mammography`: Mammography dataset
+- `mnist`: Mnist dataset
+- `mullcross`: Mullcross dataset
+- `musk`: Musk dataset
+- `optdigits`: Optical digits dataset
+- `pendigits`: Pen-based digits dataset
+- `pima`: Pima Indians diabetes dataset
+- `satellite`: Satellite dataset
+- `satimage`: Satellite image dataset
+- `seismic`: Seismic dataset
+- `shuttle`: Shuttle dataset
+- `speech`: Speech dataset
+- `thyroid`: Thyroid dataset
+- `vertebral`: Vertebral column dataset
+- `vowels`: Vowel dataset
+- `wbc`: Wisconsin breast cancer dataset
+- `wine`: Wine dataset
+
+## Compute
+
+### CPU
+
+- Our code **easily runs on CPU only instances** for up to medium dataset with a reasonable number of features.
+- For larger datasets, single-gpu or multi-gpu training is compatible with our codebase.
+
+### Distributed Training
+
+Our code is compatible with distributed training under minimal adjustments and can be launched with the usual `torchrun` command.
+
+One can set the distributed parameters as follows:
+```python
+config = NPTADConfig()
+config.system.distributed = True
+config.system.gpus = 4
+config.training.batch_size = 64
+
+trainer = train_anomaly_detector('large_dataset', config)
+```
+
+or with the command line interface
+
+```bash
+python -m npt.cli train --dataset custom_dataset --preset medium_dataset_high_d --steps 5000 --batch-size 32 --n_gpus 4 --distributed True
+```
+
+### Cuda OOM or OOM
+
+- During training: reduce batch size or model size (e.g. `config.model.dim_hidden`,`config.model.num_heads` or `config.model.stacking_depth`).
+- During inference, reduce `config.training.num_train_inference`.
 
 ## Citation
 
-If you use this code for your work, please cite our paper
-[Paper](https://arxiv.org/abs/2305.15121) as
+If you use this code in your research, please cite our paper:
 
 ```bibtex
-@misc{thimonier2023individual,
-      title={Beyond Individual Input for Deep Anomaly Detection on Tabular Data}, 
-      author={Hugo Thimonier and Fabrice Popineau and Arpad Rimmel and Bich-Liên Doan},
-      year={2023},
-      eprint={2305.15121},
-      archivePrefix={arXiv},
-      primaryClass={cs.LG}
-}
+@InProceedings{pmlr-v235-thimonier24a,
+    title = {Beyond Individual Input for Deep Anomaly Detection on Tabular Data},
+    author = {Thimonier, Hugo and Popineau, Fabrice and Rimmel, Arpad and Doan, Bich-Li\^{e}n},
+    booktitle = {Proceedings of the 41st International Conference on Machine Learning},
+    pages = {48097--48123},
+    year = {2024},
+    volume = {235},
+    series = {Proceedings of Machine Learning Research},
+    month =  {21--27 Jul},
+    publisher = {PMLR},
+    }
 ```
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Acknowledgments
+
+This work is based on the original Non-Parametric Transformers implementation from [OATML](https://github.com/OATML/non-parametric-transformers). We thank the original authors for their excellent work.

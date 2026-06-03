@@ -35,7 +35,13 @@ class MAB(nn.Module):
     (Lee et al. 2019, https://github.com/juho-lee/set_transformer).
     """
     def __init__(
-            self, dim_Q, dim_KV, dim_emb, dim_out, c):
+            self,
+            dim_Q,
+            dim_KV,
+            dim_emb,
+            dim_out,
+            config,
+        ):
         """
 
         Inputs have shape (B_A, N_A, F_A), where
@@ -54,18 +60,14 @@ class MAB(nn.Module):
         This naming scheme is inherited from set-transformer paper.
         """
         super(MAB, self).__init__()
-        mix_heads = c.model_mix_heads
-        num_heads = c.model_num_heads
-        sep_res_embed = c.model_sep_res_embed
-        ln = c.model_att_block_layer_norm
-        rff_depth = c.model_rff_depth
-        self.att_score_norm = c.model_att_score_norm
-        self.pre_layer_norm = c.model_pre_layer_norm
-        self.viz_att_maps = c.viz_att_maps
-        self.model_ablate_rff = c.model_ablate_rff
-
-        if self.viz_att_maps:
-            self.save_att_maps = SaveAttMaps()
+        mix_heads = config.model.mix_heads
+        num_heads = config.model.num_heads
+        sep_res_embed = config.model.sep_res_embed
+        ln = config.model.att_block_layer_norm
+        rff_depth = config.model.rff_depth
+        self.att_score_norm = config.model.att_score_norm
+        self.pre_layer_norm = config.model.pre_layer_norm
+        self.model_ablate_rff = False
 
         if dim_out is None:
             dim_out = dim_emb
@@ -84,28 +86,28 @@ class MAB(nn.Module):
 
         if ln:
             if self.pre_layer_norm:  # Applied to X
-                self.ln0 = nn.LayerNorm(dim_Q, eps=c.model_layer_norm_eps)
+                self.ln0 = nn.LayerNorm(dim_Q, eps=config.model.layer_norm_eps)
             else:  # Applied after MHA and residual
-                self.ln0 = nn.LayerNorm(dim_out, eps=c.model_layer_norm_eps)
+                self.ln0 = nn.LayerNorm(dim_out, eps=config.model.layer_norm_eps)
 
-            self.ln1 = nn.LayerNorm(dim_out, eps=c.model_layer_norm_eps)
+            self.ln1 = nn.LayerNorm(dim_out, eps=config.model.layer_norm_eps)
         else:
             self.ln0 = None
             self.ln1 = None
 
         self.hidden_dropout = (
-            nn.Dropout(p=c.model_hidden_dropout_prob)
-            if c.model_hidden_dropout_prob else None)
+            nn.Dropout(p=config.model.hidden_dropout_prob)
+            if config.model.hidden_dropout_prob else None)
 
         self.att_scores_dropout = (
-            nn.Dropout(p=c.model_att_score_dropout_prob)
-            if c.model_att_score_dropout_prob else None)
+            nn.Dropout(p=config.model.att_score_dropout_prob)
+            if config.model.att_score_dropout_prob else None)
 
         self.init_rff(dim_out, rff_depth)
         
-        if c.model_init_weights:
-            self.model_init_type = c.model_init_type
-            self.model_init_params = c.model_init_params
+        if config.model.init_weights:
+            self.model_init_type = config.model.init_type
+            self.model_init_params = config.model.init_params
             self.fc_q.apply(self.init_weights)
             self.fc_k.apply(self.init_weights)
             self.fc_v.apply(self.init_weights)
@@ -169,9 +171,6 @@ class MAB(nn.Module):
         else:
             raise NotImplementedError
 
-        if self.viz_att_maps:
-            A = self.save_att_maps(A, Q_, K_, V_)
-
         # Attention scores dropout is applied to the N x N_v matrix of
         # attention scores.
         # Hence, it drops out entire rows/cols to attend to.
@@ -228,10 +227,6 @@ class MAB(nn.Module):
         if not self.pre_layer_norm and self.ln1 is not None:
             expanded_linear_H = self.ln1(expanded_linear_H)
 
-        if self.viz_att_maps:
-            self.save_att_maps.out = nn.Parameter(expanded_linear_H)
-            self.save_att_maps.out_pre_res = nn.Parameter(H)
-
         return expanded_linear_H
     
     def init_weights(self, m):
@@ -239,16 +234,22 @@ class MAB(nn.Module):
             if self.model_init_type=='xavier':
                 torch.nn.init.xavier_uniform_(m.weight)
             elif self.model_init_type=='normal':
-                torch.nn.init.normal_(m.weight,
-                                     mean=float(self.model_init_params[0]), 
-                                     std=float(self.model_init_params[1]))
+                torch.nn.init.normal_(
+                    m.weight,
+                    mean=float(self.model_init_params[0]), 
+                    std=float(self.model_init_params[1])
+                )
             elif self.model_init_type=='uniform':
-                torch.nn.init.uniform_(m.weight,
-                                       a=float(self.model_init_params[0]), 
-                                       b=float(self.model_init_params[1]))
+                torch.nn.init.uniform_(
+                    m.weight,
+                    a=float(self.model_init_params[0]), 
+                    b=float(self.model_init_params[1])
+                )
             elif self.model_init_type=='constant':
-                torch.nn.init.constant_(m.weight, 
-                                        float(self.model_init_params[0]))
+                torch.nn.init.constant_(
+                    m.weight, 
+                    float(self.model_init_params[0])
+                )
 
 
 class MHSA(nn.Module):
@@ -261,9 +262,9 @@ class MHSA(nn.Module):
     """
     has_inducing_points = False
 
-    def __init__(self, dim_in, dim_emb, dim_out, c):
+    def __init__(self, dim_in, dim_emb, dim_out, config):
         super(MHSA, self).__init__()
-        self.mab = MAB(dim_in, dim_in, dim_emb, dim_out, c)
+        self.mab = MAB(dim_in, dim_in, dim_emb, dim_out, config)
 
     def forward(self, X):
         return self.mab(X, X)

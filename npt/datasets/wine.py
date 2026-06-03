@@ -1,7 +1,4 @@
 import os, scipy.io 
-from operator import itemgetter
-
-import pandas as pd
 import numpy as np
 
 from npt.datasets.base import BaseDataset
@@ -12,20 +9,25 @@ class WineDataset(BaseDataset):
     https://archive.ics.uci.edu/ml/datasets/wine
     '''
 
-    def __init__(self, c):
+    def __init__(self, config):
         super().__init__(
             fixed_test_set_index=None)
-        self.c = c
+        self.config = config
 
         self.num_target_cols = []
         self.is_data_loaded = False
         self.tmp_file_names = ['wine.mat']
 
         self.ad = True
+        self.data_path = os.path.join(
+            self.config.data.data_path,
+            self.tmp_file_names[0]
+        )
+        assert os.path.isfile(self.data_path), "Data file does not exist. Download it first."
 
     def load(self):
 
-        data = scipy.io.loadmat(os.path.join(self.c.data_path, self.tmp_file_names[0]))
+        data = scipy.io.loadmat(self.data_path)
         self.data_table  = data['X']
         self.target = ((data['y']).astype(np.int32)).reshape(-1)
 

@@ -11,10 +11,10 @@ class AbaloneDataset(BaseDataset):
     https://archive.ics.uci.edu/ml/datasets/abalone
     '''
 
-    def __init__(self, c):
+    def __init__(self, config):
         super().__init__(
             fixed_test_set_index=None)
-        self.c = c
+        self.config = config
 
         self.num_target_cols = []
         self.is_data_loaded = False
@@ -24,7 +24,7 @@ class AbaloneDataset(BaseDataset):
 
     def load(self):
 
-        data = pd.read_csv(os.path.join(self.c.data_path, 
+        data = pd.read_csv(os.path.join(self.config.data.data_path, 
                             self.tmp_file_names[0]),
                             header=None, sep=',')
         data = data.rename(columns={8: 'y'})
