@@ -1,3 +1,5 @@
+<p align="center"><img src=".github/hero.svg" alt="npt" width="880"></p>
+
 # NPT-AD: Non-Parametric Transformers for Anomaly Detection
 
 [![arXiv](https://img.shields.io/badge/arXiv-2305.15121-b31b1b.svg)](https://arxiv.org/abs/2305.15121)
